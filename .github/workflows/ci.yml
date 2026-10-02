@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv run pytest
+
+  # Release PRs must bump the version past the latest one on PyPI and have a CHANGELOG.md entry for it.
+  version-bump:
+    if: github.base_ref == 'publish'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - name: Check version is newer than PyPI
+        run: |
+          version=$(uv version --short)
+          latest=$(curl -fsS https://pypi.org/pypi/padeploy/json | jq -r .info.version) || latest=0
+          echo "pyproject: $version, PyPI: $latest"
+          uv run --no-project --with packaging python -c '
+          import sys
+          from packaging.version import Version
+          new, old = sys.argv[1:]
+          if Version(new) <= Version(old):
+              sys.exit(f"Version {new} is not newer than PyPI {old}. Run: uv version --bump patch|minor|major")
+          ' "$version" "$latest"
+      - name: Check CHANGELOG.md has an entry for this version
+        run: |
+          version=$(uv version --short)
+          if ! grep -qF "## [$version]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section. Rename [Unreleased] to it."
+            exit 1
+          fi

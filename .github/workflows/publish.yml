@@ -1,0 +1,82 @@
+# Publish on merges to the publish branch via PyPI trusted publishing: TestPyPI first, then PyPI,
+# then tag the release commit. See RELEASING.md.
+# Presumes trusted publisher setup on test.pypi.org and pypi.org, with envs "testpypi" and "pypi".
+name: Publish
+
+on:
+  push:
+    branches: [publish]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - id: version
+        name: Check version is unpublished and untagged
+        run: |
+          version=$(uv version --short)
+          if curl -fsS -o /dev/null "https://pypi.org/pypi/padeploy/$version/json"; then
+            echo "::error::padeploy $version is already on PyPI. Bump the version."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::error::Tag v$version already exists. Bump the version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run pytest
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    needs: testpypi
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  tag:
+    needs: [guard, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          git tag "v${{ needs.guard.outputs.version }}"
+          git push origin "v${{ needs.guard.outputs.version }}"
