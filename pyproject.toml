@@ -1,6 +1,6 @@
 [project]
 name = "padeploy"
-version = "0.0.1"
+version = "0.0.2"
 description = "Deploy and manage PythonAnywhere web apps from your project repo"
 readme = "README.md"
 license = "MIT"
