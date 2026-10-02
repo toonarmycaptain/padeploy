@@ -7,5 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-02
+
+### Fixed
+- Dated the 0.0.1 changelog entry. No other changes; testing dev → publish workflow.
+
+## [0.0.1] - 2026-10-02
+
 ### Added
 - Project setup: packaging with uv, CI (ruff, pytest), PyPI release workflow.
