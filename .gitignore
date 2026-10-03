@@ -7,4 +7,4 @@ build/
 .pytest_cache/
 .ruff_cache/
 .idea/
-.secrets
+.padeploy_secrets
