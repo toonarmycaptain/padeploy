@@ -1,6 +1,6 @@
 [project]
 name = "padeploy"
-version = "0.0.2"
+version = "0.1.0"
 description = "Deploy and manage PythonAnywhere web apps from your project repo"
 readme = "README.md"
 license = "MIT"
@@ -9,7 +9,13 @@ authors = [
     { name = "toonarmycaptain" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "click>=8.5.0",
+    "requests>=2.34.2",
+]
+
+[project.scripts]
+padeploy = "padeploy.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.0,<0.10.0"]
@@ -40,4 +46,5 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "ruff>=0.16.10",
+    "types-requests>=2.33.0.20260906",
 ]
