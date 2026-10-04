@@ -16,7 +16,7 @@ from padeploy.config import (
     load_config,
     load_token,
     parse_config,
-    read_secret,
+    read_secrets,
 )
 
 PROJECT_DIR = Path("/project")
@@ -38,13 +38,14 @@ DEFAULT_CONFIG = Config(
     include=(),
     exclude=DEFAULT_EXCLUDE,
     groups=DEFAULT_GROUPS,
+    log_level="WARNING",
 )
 NO_PADEPLOY_PYPROJECT = "[project]\nname = 'x'\n"
 
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the developer's or CI's real token and settings out of the tests."""
+    """Keep the developer's or CI's real token and config out of the tests."""
     for name in list(os.environ):
         if name.startswith("PADEPLOY_"):
             monkeypatch.delenv(name)
@@ -98,6 +99,18 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             id="groups-add-and-override",
         ),
         pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "LOG_LEVEL": "DEBUG"},
+            nullcontext(),
+            replace(DEFAULT_CONFIG, log_level="DEBUG"),
+            id="log-level",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "LOG_LEVEL": "loud"},
+            pytest.raises(ConfigError, match="LOG_LEVEL must be a logging level, e.g. DEBUG"),
+            None,
+            id="unknown-log-level",
+        ),
+        pytest.param(
             {"REMOTE_DIR": "/home/x"},
             pytest.raises(ConfigError, match="needs USER"),
             None,
@@ -117,35 +130,39 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "usr": "typo"},
-            pytest.raises(ConfigError, match="Unknown key\\(s\\) in \\[tool.padeploy\\]: usr"),
+            pytest.raises(ConfigError, match="Unknown config key\\(s\\): usr"),
             None,
             id="unknown-key",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "API_TOKEN": "x"},
-            pytest.raises(
-                ConfigError, match="Unknown key\\(s\\) in \\[tool.padeploy\\]: API_TOKEN"
-            ),
+            pytest.raises(ConfigError, match="API_TOKEN can't go in pyproject.toml"),
             None,
             id="api-token-not-allowed",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "host": "eu.pythonanywhere.com"},
-            pytest.raises(ConfigError, match="Unknown key\\(s\\) in \\[tool.padeploy\\]: host"),
+            pytest.raises(ConfigError, match="Unknown config key\\(s\\): host"),
             None,
             id="lowercase-name-is-unknown",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "HOST": 1},
-            pytest.raises(ConfigError, match="'HOST' must be a string"),
+            pytest.raises(ConfigError, match="HOST must be a string, got 1"),
             None,
             id="non-string-host",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "EXCLUDE": "tests/"},
-            pytest.raises(ConfigError, match="'EXCLUDE' must be a list of strings"),
+            pytest.raises(ConfigError, match="EXCLUDE must be a list of strings"),
             None,
             id="non-list-exclude",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "EXCLUDE": ["tests/", 1]},
+            pytest.raises(ConfigError, match="EXCLUDE must be a list of strings"),
+            None,
+            id="non-string-in-exclude",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "GROUPS": ["data"]},
@@ -155,27 +172,33 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "GROUPS": {"data": ["data.db"]}},
-            pytest.raises(ConfigError, match="must be a table"),
+            pytest.raises(ConfigError, match="GROUPS.data must be like"),
             None,
             id="non-table-group",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "GROUPS": {"data": {"default": False}}},
-            pytest.raises(ConfigError, match="needs 'paths'"),
+            pytest.raises(ConfigError, match="GROUPS.data must be like"),
             None,
             id="group-missing-paths",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "GROUPS": {"data": {"paths": [], "opt": 1}}},
-            pytest.raises(ConfigError, match="Unknown key"),
+            pytest.raises(ConfigError, match="GROUPS.data must be like"),
             None,
             id="group-unknown-key",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "GROUPS": {"data": {"paths": [], "default": 0}}},
-            pytest.raises(ConfigError, match="true or false"),
+            pytest.raises(ConfigError, match="GROUPS.data must be like"),
             None,
             id="non-bool-group-default",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "GROUPS": {"data": {"paths": [1]}}},
+            pytest.raises(ConfigError, match="GROUPS.data.paths must be a list of strings"),
+            None,
+            id="non-string-group-path",
         ),
     ],
 )
@@ -195,12 +218,12 @@ def test_parse_config(
         pytest.param(MINIMAL_PYPROJECT, None, {}, "src/pkg", nullcontext(), {}, id="subdirectory"),
         pytest.param(
             NO_PADEPLOY_PYPROJECT,
-            "USER=arthur\nREMOTE_DIR=/home/arthur/arthur/\n",
+            'USER = "arthur"\nREMOTE_DIR = "/home/arthur/arthur/"\n',
             {},
             ".",
             nullcontext(),
             {},
-            id="settings-in-secrets-file",
+            id="config-in-secrets-file",
         ),
         pytest.param(
             NO_PADEPLOY_PYPROJECT,
@@ -209,11 +232,29 @@ def test_parse_config(
             ".",
             nullcontext(),
             {},
-            id="settings-in-environment",
+            id="config-in-environment",
         ),
         pytest.param(
             MINIMAL_PYPROJECT,
-            "HOST=eu.pythonanywhere.com\n",
+            'API_TOKEN = "t"\nMY_IP = "1.2.3.4"\n',
+            {},
+            ".",
+            nullcontext(),
+            {},
+            id="token-and-other-keys-in-secrets-file-ignored",
+        ),
+        pytest.param(
+            MINIMAL_PYPROJECT,
+            "USER=arthur\n",
+            {},
+            ".",
+            pytest.raises(ConfigError, match="padeploy_secrets.toml is not valid TOML"),
+            {},
+            id="secrets-file-not-toml",
+        ),
+        pytest.param(
+            MINIMAL_PYPROJECT,
+            'HOST = "eu.pythonanywhere.com"\n',
             {},
             ".",
             nullcontext(),
@@ -222,7 +263,7 @@ def test_parse_config(
         ),
         pytest.param(
             MINIMAL_PYPROJECT,
-            "USER=lancelot\n",
+            'USER = "lancelot"\n',
             {"PADEPLOY_USER": "galahad"},
             ".",
             nullcontext(),
@@ -236,7 +277,7 @@ def test_parse_config(
             ".",
             nullcontext(),
             {"exclude": (*DEFAULT_EXCLUDE, "scripts/")},
-            id="list-setting-in-environment",
+            id="list-in-environment",
         ),
         pytest.param(
             MINIMAL_PYPROJECT,
@@ -245,7 +286,7 @@ def test_parse_config(
             ".",
             nullcontext(),
             {"groups": {**DEFAULT_GROUPS, "data": Group(("data.db",), default=False)}},
-            id="table-setting-in-secrets-file",
+            id="table-in-secrets-file",
         ),
         pytest.param(
             MINIMAL_PYPROJECT,
@@ -254,7 +295,7 @@ def test_parse_config(
             ".",
             pytest.raises(ConfigError, match="EXCLUDE must be a TOML value"),
             {},
-            id="list-setting-not-toml",
+            id="list-in-environment-not-toml",
         ),
         pytest.param(
             None,
@@ -272,7 +313,7 @@ def test_parse_config(
             ".",
             pytest.raises(ConfigError, match="needs USER: .* PADEPLOY_USER"),
             {},
-            id="no-settings",
+            id="no-config",
         ),
         pytest.param(
             "[tool]\npadeploy = 1\n",
@@ -298,7 +339,7 @@ def test_load_config(
     if pyproject is not None:
         (tmp_path / "pyproject.toml").write_text(pyproject)
     if secrets is not None:
-        (tmp_path / ".padeploy_secrets").write_text(secrets)
+        (tmp_path / ".padeploy_secrets.toml").write_text(secrets)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     (tmp_path / start).mkdir(parents=True, exist_ok=True)
@@ -314,31 +355,42 @@ MISSING_TOKEN = pytest.raises(ConfigError, match="needs API_TOKEN: .* PADEPLOY_A
     ("env", "secrets", "expected_exception", "expected_token"),
     [
         pytest.param("from-env", None, nullcontext(), "from-env", id="environment"),
-        pytest.param(None, "API_TOKEN=from-file\n", nullcontext(), "from-file", id="secrets-file"),
+        pytest.param(
+            None, 'API_TOKEN = "from-file"\n', nullcontext(), "from-file", id="secrets-file"
+        ),
         pytest.param(
             "from-env",
-            "API_TOKEN=from-file\n",
+            'API_TOKEN = "from-file"\n',
             nullcontext(),
             "from-env",
             id="environment-overrides-secrets-file",
         ),
         pytest.param(
             None,
-            "# API_TOKEN=commented\n\nAPI_TOKEN = spaced \n",
+            '# API_TOKEN = "commented"\n\nAPI_TOKEN = "t"  # note\n',
             nullcontext(),
-            "spaced",
-            id="comment-lines-and-spaces",
+            "t",
+            id="comments-ignored",
         ),
         pytest.param(
             None,
-            "API_TOKEN=abc  # note\n",
+            'API_TOKEN = "abc#def"\n',
             nullcontext(),
-            "abc  # note",
-            id="mid-line-hash-is-part-of-value",
+            "abc#def",
+            id="hash-in-quotes-is-part-of-value",
         ),
         pytest.param(None, None, MISSING_TOKEN, None, id="missing"),
-        pytest.param(None, "API_TOKEN=\n", MISSING_TOKEN, None, id="empty"),
-        pytest.param(None, "OTHER=x\n", MISSING_TOKEN, None, id="not-in-secrets-file"),
+        pytest.param(None, 'API_TOKEN = ""\n', MISSING_TOKEN, None, id="empty"),
+        pytest.param(None, 'OTHER = "x"\n', MISSING_TOKEN, None, id="not-in-secrets-file"),
+        pytest.param(
+            None,
+            "API_TOKEN = 123\n",
+            pytest.raises(
+                ConfigError, match="API_TOKEN in .padeploy_secrets.toml must be a string"
+            ),
+            None,
+            id="non-string",
+        ),
     ],
 )
 def test_load_token(
@@ -352,11 +404,23 @@ def test_load_token(
     if env is not None:
         monkeypatch.setenv("PADEPLOY_API_TOKEN", env)
     if secrets is not None:
-        (tmp_path / ".padeploy_secrets").write_text(secrets)
+        (tmp_path / ".padeploy_secrets.toml").write_text(secrets)
     with expected_exception:
         assert load_token(tmp_path) == expected_token
 
 
-def test_read_secret_other_keys(tmp_path: Path) -> None:
-    (tmp_path / ".padeploy_secrets").write_text("API_TOKEN=t\nMY_IP=1.2.3.4, ::1\n")
-    assert read_secret(tmp_path, "MY_IP") == "1.2.3.4, ::1"
+@pytest.mark.parametrize(
+    ("secrets", "expected"),
+    [
+        pytest.param(None, {}, id="no-file"),
+        pytest.param(
+            'API_TOKEN = "t"\nMY_IP = "1.2.3.4, ::1"\n',
+            {"API_TOKEN": "t", "MY_IP": "1.2.3.4, ::1"},
+            id="every-key",
+        ),
+    ],
+)
+def test_read_secrets(tmp_path: Path, secrets: str | None, expected: dict[str, Any]) -> None:
+    if secrets is not None:
+        (tmp_path / ".padeploy_secrets.toml").write_text(secrets)
+    assert read_secrets(tmp_path) == expected

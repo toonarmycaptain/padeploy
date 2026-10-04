@@ -1,5 +1,6 @@
-"""Load a project's padeploy settings and API token."""
+"""Load a project's padeploy config and API token."""
 
+import logging
 import os
 import tomllib
 from collections.abc import Mapping
@@ -8,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_HOST = "www.pythonanywhere.com"
+DEFAULT_LOG_LEVEL = "WARNING"
 TOKEN_KEY = "API_TOKEN"
 ENV_PREFIX = "PADEPLOY_"
-SECRETS_FILE = ".padeploy_secrets"
+SECRETS_FILE = ".padeploy_secrets.toml"
 
 
 class ConfigError(Exception):
@@ -33,12 +35,12 @@ DEFAULT_GROUPS: Mapping[str, Group] = {
     "assets": Group(("static/",)),
 }
 
-# Each setting has one name, used as-is in [tool.padeploy] and .padeploy_secrets, and with the
-# PADEPLOY_ prefix in the environment.
-# List and table settings take a TOML value outside pyproject.toml, e.g. EXCLUDE=["x/"].
-_KEYS = {"USER", "REMOTE_DIR", "DOMAIN", "HOST", "INCLUDE", "EXCLUDE", "GROUPS"}
-_TOML_KEYS = {"INCLUDE", "EXCLUDE", "GROUPS"}
-_GROUP_KEYS = {"paths", "default"}
+# Each config key has one name, used as-is in [tool.padeploy] and .padeploy_secrets.toml, and with
+# the PADEPLOY_ prefix in the environment, where lists and tables are TOML values,
+# e.g. PADEPLOY_EXCLUDE='["scripts/"]'.
+_STR_KEYS = ("USER", "REMOTE_DIR", "DOMAIN", "HOST", "LOG_LEVEL")
+_LIST_KEYS = ("INCLUDE", "EXCLUDE")
+_KEYS = (*_STR_KEYS, *_LIST_KEYS, "GROUPS")
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class Config:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     groups: Mapping[str, Group]
+    log_level: str
 
 
 def find_pyproject(start: Path) -> Path:
@@ -63,136 +66,118 @@ def find_pyproject(start: Path) -> Path:
 
 
 def load_config(start: Path | None = None) -> Config:
-    """Load settings for the project whose pyproject.toml is nearest at or above ``start`` (or cwd).
+    """Load config for the project whose pyproject.toml is nearest at or above ``start`` (or cwd).
 
-    Each setting comes from the environment (``PADEPLOY_<NAME>``), else ``.padeploy_secrets``, else
-    ``[tool.padeploy]``.
+    Each config key comes from the environment (``PADEPLOY_<NAME>``), else
+    ``.padeploy_secrets.toml``, else ``[tool.padeploy]``.
     """
     pyproject = find_pyproject((start or Path.cwd()).resolve())
-    with pyproject.open("rb") as f:
-        data = tomllib.load(f)
-    section = data.get("tool", {}).get("padeploy", {})
+    section = _read_toml(pyproject).get("tool", {}).get("padeploy", {})
     if not isinstance(section, Mapping):
         raise ConfigError(f"[tool.padeploy] in {pyproject} must be a table")
     project_dir = pyproject.parent
-    overrides: dict[str, Any] = {}
+    secrets = {k: v for k, v in read_secrets(project_dir).items() if k in _KEYS}
+    env = {}
     for key in _KEYS:
-        value = _lookup(project_dir, key)
-        if value:
-            overrides[key] = _toml_value(key, value) if key in _TOML_KEYS else value
-    return parse_config({**section, **overrides}, project_dir)
+        if value := os.environ.get(ENV_PREFIX + key):
+            env[key] = value if key in _STR_KEYS else _toml_value(ENV_PREFIX + key, value)
+    return parse_config({**section, **secrets, **env}, project_dir)
 
 
 def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
-    """Validate a ``[tool.padeploy]`` table and fill in defaults."""
-    _reject_unknown(section, _KEYS, "[tool.padeploy]")
-    user = _required_str(section, "USER")
-    remote_dir = _required_str(section, "REMOTE_DIR")
+    """Validate config keyed as in ``[tool.padeploy]``, and fill in defaults."""
+    if TOKEN_KEY in section:
+        raise ConfigError(
+            f"{TOKEN_KEY} can't go in pyproject.toml: set it in {SECRETS_FILE}, or as"
+            f" {ENV_PREFIX}{TOKEN_KEY} in the environment"
+        )
+    unknown = sorted(set(section) - set(_KEYS))
+    if unknown:
+        raise ConfigError(f"Unknown config key(s): {', '.join(unknown)}")
+    for key in _STR_KEYS:
+        if not isinstance(section.get(key, ""), str):
+            raise ConfigError(f"{key} must be a string, got {section[key]!r}")
+    for key in ("USER", "REMOTE_DIR"):
+        if not section.get(key):
+            raise ConfigError(
+                f"padeploy needs {key}: set it in [tool.padeploy] or {SECRETS_FILE}, or as"
+                f" {ENV_PREFIX}{key} in the environment"
+            )
+    remote_dir = section["REMOTE_DIR"]
     if not remote_dir.startswith("/"):
         raise ConfigError(f"REMOTE_DIR must be an absolute path, got {remote_dir!r}")
-
-    raw_groups = section.get("GROUPS", {})
-    if not isinstance(raw_groups, Mapping):
-        raise ConfigError("GROUPS must be a table")
-    groups = dict(DEFAULT_GROUPS)
-    for name, raw in raw_groups.items():
-        groups[name] = _parse_group(name, raw)
+    log_level = section.get("LOG_LEVEL") or DEFAULT_LOG_LEVEL
+    if log_level not in logging.getLevelNamesMapping():
+        raise ConfigError(f"LOG_LEVEL must be a logging level, e.g. DEBUG, got {log_level!r}")
 
     return Config(
         project_dir=project_dir,
-        user=user,
+        user=section["USER"],
         remote_dir=remote_dir.rstrip("/"),
-        domain=_optional_str(section, "DOMAIN") or f"{user}.pythonanywhere.com",
-        host=_optional_str(section, "HOST") or DEFAULT_HOST,
-        include=_str_list(section, "INCLUDE", "[tool.padeploy]"),
-        exclude=DEFAULT_EXCLUDE + _str_list(section, "EXCLUDE", "[tool.padeploy]"),
-        groups=groups,
+        domain=section.get("DOMAIN") or f"{section['USER']}.pythonanywhere.com",
+        host=section.get("HOST") or DEFAULT_HOST,
+        include=_str_tuple("INCLUDE", section.get("INCLUDE", [])),
+        exclude=DEFAULT_EXCLUDE + _str_tuple("EXCLUDE", section.get("EXCLUDE", [])),
+        groups={**DEFAULT_GROUPS, **_groups(section.get("GROUPS", {}))},
+        log_level=log_level,
     )
 
 
 def load_token(project_dir: Path) -> str:
-    """Return ``API_TOKEN`` from the environment or ``.padeploy_secrets``."""
-    token = _lookup(project_dir, TOKEN_KEY)
+    """Return ``API_TOKEN`` from the environment or ``.padeploy_secrets.toml``."""
+    token = os.environ.get(ENV_PREFIX + TOKEN_KEY) or read_secrets(project_dir).get(TOKEN_KEY)
     if not token:
         raise ConfigError(
             f"padeploy needs {TOKEN_KEY}: set it in {SECRETS_FILE}, or as"
             f" {ENV_PREFIX}{TOKEN_KEY} in the environment"
         )
+    if not isinstance(token, str):
+        raise ConfigError(f"{TOKEN_KEY} in {SECRETS_FILE} must be a string")
     return token
 
 
-def read_secret(project_dir: Path, key: str) -> str | None:
-    """Read ``KEY=value`` from the project's ``.padeploy_secrets`` file; None if absent."""
+def read_secrets(project_dir: Path) -> dict[str, Any]:
+    """The project's ``.padeploy_secrets.toml`` TOML file as a dict; empty if there isn't one."""
     secrets = project_dir / SECRETS_FILE
-    if not secrets.is_file():
-        return None
-    for line in secrets.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        name, sep, value = line.partition("=")
-        if sep and name.strip() == key:
-            return value.strip() or None
-    return None
+    return _read_toml(secrets) if secrets.is_file() else {}
 
 
-def _lookup(project_dir: Path, key: str) -> str | None:
-    """``PADEPLOY_<key>`` from the environment, else ``key`` from ``.padeploy_secrets``.
+def _read_toml(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path} is not valid TOML: {e}") from e
 
-    An empty value counts as unset.
-    """
-    return os.environ.get(ENV_PREFIX + key) or read_secret(project_dir, key)
 
-
-def _toml_value(key: str, text: str) -> Any:
-    """Parse a list or table setting written as a TOML value, e.g. ``["scripts/"]``."""
+def _toml_value(name: str, text: str) -> Any:
+    """Parse an environment variable written as a TOML value, e.g. ``["scripts/"]``."""
     try:
         return tomllib.loads(f"value = {text}")["value"]
     except tomllib.TOMLDecodeError as e:
-        raise ConfigError(
-            f"{key} must be a TOML value, as in pyproject.toml, e.g. "
-            f'["scripts/"] or {{ data = {{ paths = ["data.db"] }} }}: {e}'
-        ) from e
+        raise ConfigError(f'{name} must be a TOML value, e.g. ["scripts/"]: {e}') from e
 
 
-def _parse_group(name: str, raw: Any) -> Group:
-    where = f"GROUPS.{name}"
-    if not isinstance(raw, Mapping):
-        raise ConfigError(f"{where} must be a table, e.g. {{ paths = [...] }}")
-    _reject_unknown(raw, _GROUP_KEYS, where)
-    if "paths" not in raw:
-        raise ConfigError(f"{where} needs 'paths'")
-    default = raw.get("default", True)
-    if not isinstance(default, bool):
-        raise ConfigError(f"{where} 'default' must be true or false")
-    return Group(_str_list(raw, "paths", where), default)
-
-
-def _reject_unknown(table: Mapping[str, Any], known: set[str], where: str) -> None:
-    unknown = sorted(set(table) - known)
-    if unknown:
-        raise ConfigError(f"Unknown key(s) in {where}: {', '.join(unknown)}")
-
-
-def _required_str(section: Mapping[str, Any], key: str) -> str:
-    value = _optional_str(section, key)
-    if not value:
-        raise ConfigError(
-            f"padeploy needs {key}: set it in [tool.padeploy] or {SECRETS_FILE}, or as"
-            f" {ENV_PREFIX}{key} in the environment"
-        )
-    return value
-
-
-def _optional_str(section: Mapping[str, Any], key: str) -> str | None:
-    value = section.get(key)
-    if value is not None and not isinstance(value, str):
-        raise ConfigError(f"[tool.padeploy] '{key}' must be a string")
-    return value
-
-
-def _str_list(table: Mapping[str, Any], key: str, where: str) -> tuple[str, ...]:
-    value = table.get(key, [])
+def _str_tuple(where: str, value: Any) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-        raise ConfigError(f"{where} '{key}' must be a list of strings")
+        raise ConfigError(f'{where} must be a list of strings, e.g. ["static/"], got {value!r}')
     return tuple(value)
+
+
+def _groups(raw: Any) -> dict[str, Group]:
+    """``{ name = { paths = [...], default = false } }`` → Groups."""
+    example = '{ data = { paths = ["data.db"], default = false } }'
+    if not isinstance(raw, Mapping):
+        raise ConfigError(f"GROUPS must be a table, e.g. {example}")
+    groups = {}
+    for name, group in raw.items():
+        if (
+            not isinstance(group, Mapping)
+            or "paths" not in group
+            or set(group) - {"paths", "default"}
+            or not isinstance(group.get("default", True), bool)
+        ):
+            raise ConfigError(f"GROUPS.{name} must be like {example}, got {group!r}")
+        paths = _str_tuple(f"GROUPS.{name}.paths", group["paths"])
+        groups[name] = Group(paths, group.get("default", True))
+    return groups

@@ -3,21 +3,19 @@
 Deploy and manage [PythonAnywhere](https://www.pythonanywhere.com) web apps from your
 project repo, over the PythonAnywhere API.
 
-## Settings
 
-padeploy can take settings from three places, in order of precedence:
+## Config
+
+padeploy can take config from three places, in order of precedence:
 
 1. Environment variables  - prefixed with `PADEPLOY_` e.g. `PADEPLOY_USER`
-2. `.padeploy_secrets`
+2. `.padeploy_secrets.toml` at project root
 3. `[tool.padeploy]` in pyproject.toml
 
 The name is the same in all three; env vars prefix with `PADEPLOY_` to avoid potential conflicts.
 
-Settings can be split across or/and live in multiple places; you might have a `.padeploy_secrets` file for local dev, and
+Config can be split across or/and live in multiple places; you might have a `.padeploy_secrets.toml` file for local dev, and
 override one or more values in CI via env vars.
-
-Your project root is the directory of the nearest pyproject.toml at or above the current directory;
-`.padeploy_secrets` goes there.
 
 | Name | |
 |---|---|
@@ -31,24 +29,23 @@ Your project root is the directory of the nearest pyproject.toml at or above the
 only when the web app is registered on PythonAnywhere under a custom domain.<br>
 NB if using default PythonAnywhere or if a proxy (e.g. Cloudflare) forwards your domain to `yourname.pythonanywhere.com`, leave `DOMAIN` unset.
 
-### `.padeploy_secrets`
+### `.padeploy_secrets.toml`
 
-One `NAME=value` per line. Lines starting with `#` are ignored; a `#` later in a line is part of the
-value. It's the place for `API_TOKEN`, and for `USER` and `REMOTE_DIR`, which reveal your
-PythonAnywhere username and so are best kept out of version control.
+TOML; the place for `API_TOKEN`, `USER`, and `REMOTE_DIR`, which reveal your PythonAnywhere
+secret/username/internal structure and so are best kept out of version control.
 
+```toml
+API_TOKEN = "your-token-here"
+USER = "yourname"
+REMOTE_DIR = "/home/yourname/mysite"
 ```
-API_TOKEN=your-token-here
-USER=yourname
-REMOTE_DIR=/home/yourname/mysite
-```
 
-Keep your `.padeploy_secrets` out of git!
+Keep your `.padeploy_secrets.toml` out of git!
 
 ### pyproject.toml
 
 If your username is public anyway (your site is served from `yourname.pythonanywhere.com`), you can
-commit settings in `[tool.padeploy]` instead. Unknown names are errors, so typos fail loudly.
+commit config in `[tool.padeploy]` instead. Unknown names are errors, so typos fail loudly.
 
 ```toml
 [tool.padeploy]

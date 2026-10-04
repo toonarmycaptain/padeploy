@@ -8,8 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- Settings `USER`/`REMOTE_DIR` (required), `DOMAIN`, `HOST`, `INCLUDE`, `EXCLUDE`, and `GROUPS`, read from the environment (as `PADEPLOY_<NAME>`), then a `.padeploy_secrets` file next to pyproject.toml, then `[tool.padeploy]` in pyproject.toml. List and table settings take TOML values outside pyproject.toml, e.g. `EXCLUDE=["scripts/"]`.
-- API token as the `API_TOKEN` setting, from the environment (`PADEPLOY_API_TOKEN`) or `.padeploy_secrets` only.
+- Config keys `USER`/`REMOTE_DIR` (required), `DOMAIN`, `HOST`, `LOG_LEVEL`, `INCLUDE`, `EXCLUDE`, and `GROUPS`, read from the environment (as `PADEPLOY_<NAME>`), then a `.padeploy_secrets.toml` file next to pyproject.toml, then `[tool.padeploy]` in pyproject.toml. In the environment, lists and tables are TOML values, e.g. `PADEPLOY_EXCLUDE='["scripts/"]'`.
+- API token as the `API_TOKEN` config key, from the environment (`PADEPLOY_API_TOKEN`) or `.padeploy_secrets.toml` only.
 
 ## [0.0.2] - 2026-10-02
 
