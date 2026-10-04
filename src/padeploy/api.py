@@ -1,5 +1,6 @@
 """Thin client for the PythonAnywhere API: auth, timeouts and rate-limit retries."""
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -11,6 +12,8 @@ from .config import DEFAULT_HOST
 
 MAX_RETRIES = 5
 TIMEOUT = 30.0
+
+logger = logging.getLogger(__name__)
 
 
 class PAError(Exception):
@@ -68,7 +71,12 @@ class PAClient:
             elif attempt < self.max_retries:
                 try:
                     delay = float(response.headers["Retry-After"])
+                    logger.warning(f"Rate limited by PythonAnywhere; retrying in {delay:g}s")
                 except (KeyError, ValueError):  # missing, or the HTTP-date form
                     delay = 2**attempt
+                logger.debug(
+                    f"429 on {method} {url}; "
+                    f"retry {attempt + 1:d} of {self.max_retries:d} in {delay:g}s"
+                )
                 self.sleep(delay)
         raise PAError(f"Still rate limited after {self.max_retries} retries: {method} {url}")

@@ -1,3 +1,4 @@
+import logging
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 from unittest.mock import Mock, call
@@ -150,6 +151,40 @@ def test_rate_limit_retries(
         client.reload("example.com")
     assert sleeps == expected_sleeps
     assert session.request.call_count == len(statuses)
+
+
+RETRY_DEBUG = f"429 on POST {BASE}/webapps/example.com/reload/; retry 1 of 5 in"
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_logs"),
+    [
+        pytest.param(
+            "30",
+            [
+                (logging.WARNING, "Rate limited by PythonAnywhere; retrying in 30s"),
+                (logging.DEBUG, f"{RETRY_DEBUG} 30s"),
+            ],
+            id="retry-after-seconds-is-a-warning",
+        ),
+        pytest.param(None, [(logging.DEBUG, f"{RETRY_DEBUG} 1s")], id="backoff-is-debug-only"),
+        pytest.param(
+            "Wed, 21 Oct 2026 07:28:00 GMT",
+            [(logging.DEBUG, f"{RETRY_DEBUG} 1s")],
+            id="retry-after-date-is-debug-only",
+        ),
+    ],
+)
+def test_rate_limit_log_messages(
+    caplog: pytest.LogCaptureFixture,
+    retry_after: str | None,
+    expected_logs: list[tuple[int, str]],
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="padeploy")
+    headers = {"Retry-After": retry_after} if retry_after else {}
+    client, _, _ = make_client(make_response(429, headers=headers), make_response(200))
+    client.reload("example.com")
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == expected_logs
 
 
 @pytest.mark.parametrize("max_retries", [-1, -5])
