@@ -10,6 +10,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Config keys `USER`/`REMOTE_DIR` (required), `DOMAIN`, `HOST`, `LOG_LEVEL`, `INCLUDE`, `EXCLUDE`, and `GROUPS`, read from the environment (as `PADEPLOY_<NAME>`), then a `.padeploy_secrets.toml` file next to pyproject.toml, then `[tool.padeploy]` in pyproject.toml. In the environment, lists and tables are TOML values, e.g. `PADEPLOY_EXCLUDE='["scripts/"]'`.
 - API token as the `API_TOKEN` config key, from the environment (`PADEPLOY_API_TOKEN`) or `.padeploy_secrets.toml` only.
+- Click CLI; `padeploy reload` reloads the web app, exiting non-zero on failure. PythonAnywhere's missing-CNAME response is reported as a warning. Rate-limited (429) requests are retried with backoff.
+- `-v`/`--verbose` shows debug output, e.g. each rate-limit retry.
 
 ## [0.0.2] - 2026-10-02
 
