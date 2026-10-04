@@ -1,5 +1,6 @@
 import logging
 from contextlib import AbstractContextManager, nullcontext
+from http import HTTPStatus
 from typing import Any
 from unittest.mock import Mock, call
 
@@ -17,6 +18,7 @@ def make_response(
 ) -> requests.Response:
     response = requests.Response()
     response.status_code = status
+    response.reason = HTTPStatus(status).phrase
     response._content = body.encode()
     response.headers.update(headers or {})
     return response
@@ -64,6 +66,22 @@ def test_request_headers_and_url() -> None:
             pytest.raises(PAError, match="Reload failed \\(500\\): boom"),
             None,
             id="server-error",
+        ),
+        pytest.param(
+            make_response(403, '{"detail":"You do not have permission to perform this action."}'),
+            pytest.raises(PAError, match="Reload failed \\(403\\): .* Check USER is the account"),
+            None,
+            id="forbidden-hints-user-token-mismatch",
+        ),
+        pytest.param(
+            make_response(500, "<html>error page</html>", {"Content-Type": "text/html"}),
+            pytest.raises(
+                PAError,
+                match="Reload failed \\(500\\): Internal Server Error\\. PythonAnywhere also"
+                " returns this when USER doesn't exist\\.$",
+            ),
+            None,
+            id="html-error-page-shows-reason-only",
         ),
         pytest.param(
             make_response(409, "not json"),

@@ -12,6 +12,10 @@ from .config import DEFAULT_HOST
 
 MAX_RETRIES = 5
 TIMEOUT = 30.0
+RELOAD_HINTS = {
+    403: "Check USER is the account the API token belongs to.",
+    500: "PythonAnywhere also returns this when USER doesn't exist.",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +58,10 @@ class PAClient:
                 body = None
             if isinstance(body, dict) and body.get("error") == "cname_error":
                 return f"{domain} reloaded, but PythonAnywhere found no CNAME record for it."
-        raise PAError(f"Reload failed ({response.status_code}): {response.text}")
+        message = f"Reload failed ({response.status_code}): {_detail(response)}"
+        if hint := RELOAD_HINTS.get(response.status_code):
+            message += f". {hint}"
+        raise PAError(message)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         """Send a request, retrying on 429 (rate limited) with backoff."""
@@ -80,3 +87,10 @@ class PAClient:
                 )
                 self.sleep(delay)
         raise PAError(f"Still rate limited after {self.max_retries} retries: {method} {url}")
+
+
+def _detail(response: requests.Response) -> str:
+    """The response body, or just the status reason if it's an HTML error page."""
+    if "html" in response.headers.get("Content-Type", ""):
+        return response.reason
+    return response.text
