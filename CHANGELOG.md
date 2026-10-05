@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-05
+
+### Added
+- `padeploy deploy` uploads the project's git-tracked files to `REMOTE_DIR` and reloads the web app, exiting non-zero without reloading if any upload fails. Options: `--changes`, `--staged`, `--since COMMIT`, `--with GROUP`, `--only GROUP`, `--code`, `--include`/`--exclude` (comma-separated, repeatable), `--dry-run`, `--no-reload`.
+- `INCLUDE`, `EXCLUDE` and `GROUPS` now work. Opt-in groups (`default = false`) can hold untracked files; .gitignored ones must be named exactly, without wildcards.
+- Patterns can be absolute paths inside the project.
+- `.padeploy_secrets.toml` is excluded by default.
+- `deploy` and `reload` ask for `API_TOKEN` when it isn't set and they're run in a terminal.
+- `deploy` warns that `uv sync` may be needed on the server after uploading `pyproject.toml` or `uv.lock`.
+
+### Changed
+- Patterns in `INCLUDE`, `EXCLUDE` and `GROUPS` are checked when config loads: empty ones, ones containing `..`, and ones outside the project are errors.
+
 ## [0.1.0] - 2026-10-03
 
 ### Added

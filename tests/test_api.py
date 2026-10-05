@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from padeploy import __version__
-from padeploy.api import MAX_RETRIES, PAClient, PAError
+from padeploy.api import MAX_RETRIES, PAClient, PAError, UploadError
 
 BASE = "https://www.pythonanywhere.com/api/v0/user/bruce"
 
@@ -117,6 +117,39 @@ def test_reload(
     client, _, _ = make_client(result)
     with expected_exception:
         assert client.reload("example.com") == expected_warning
+
+
+def test_upload_quotes_path_and_resends_content_on_retry() -> None:
+    client, session, _ = make_client(make_response(429), make_response(201))
+    client.upload("/home/bruce/site/static/a b#1.css", b"body {}")
+    upload = call(
+        "POST",
+        f"{BASE}/files/path/home/bruce/site/static/a%20b%231.css",
+        timeout=30.0,
+        files={"content": b"body {}"},
+    )
+    assert session.request.call_args_list == [upload, upload]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_exception"),
+    [
+        pytest.param(make_response(200), nullcontext(), id="updated"),
+        pytest.param(make_response(201), nullcontext(), id="created"),
+        pytest.param(
+            make_response(403, "no"),
+            pytest.raises(UploadError, match="^Upload failed \\(403\\): no$"),
+            id="refused",
+        ),
+        pytest.param(
+            make_response(401), pytest.raises(PAError, match="token rejected"), id="token-rejected"
+        ),
+    ],
+)
+def test_upload(result: requests.Response, expected_exception: AbstractContextManager[Any]) -> None:
+    client, _, _ = make_client(result)
+    with expected_exception:
+        client.upload("/home/bruce/site/app.py", b"")
 
 
 @pytest.mark.parametrize(

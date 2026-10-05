@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -22,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 class PAError(Exception):
     """A PythonAnywhere API call failed."""
+
+
+class UploadError(PAError):
+    """PythonAnywhere refused one file; other uploads may still work."""
 
 
 class PAClient:
@@ -62,6 +67,14 @@ class PAClient:
         if hint := RELOAD_HINTS.get(response.status_code):
             message += f". {hint}"
         raise PAError(message)
+
+    def upload(self, remote_path: str, content: bytes) -> None:
+        """Write ``content`` to the absolute ``remote_path``, creating missing directories."""
+        response = self._request(
+            "POST", f"/files/path{quote(remote_path)}", files={"content": content}
+        )
+        if not response.ok:
+            raise UploadError(f"Upload failed ({response.status_code}): {_detail(response)}")
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         """Send a request, retrying on 429 (rate limited) with backoff."""

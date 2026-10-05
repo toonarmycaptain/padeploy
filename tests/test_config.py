@@ -13,6 +13,8 @@ from padeploy.config import (
     Config,
     ConfigError,
     Group,
+    MissingTokenError,
+    check_patterns,
     load_config,
     load_token,
     parse_config,
@@ -97,6 +99,26 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
                 },
             ),
             id="groups-add-and-override",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "INCLUDE": ["/project/static/", "./app.py"]},
+            nullcontext(),
+            replace(DEFAULT_CONFIG, include=("static/", "app.py")),
+            id="include-patterns-made-relative",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "EXCLUDE": ["../x"]},
+            pytest.raises(ConfigError, match="EXCLUDE patterns must be paths inside the project"),
+            None,
+            id="exclude-pattern-outside-project",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "GROUPS": {"data": {"paths": ["/elsewhere/x.db"]}}},
+            pytest.raises(
+                ConfigError, match="GROUPS.data.paths pattern '/elsewhere/x.db' is outside the"
+            ),
+            None,
+            id="group-pattern-outside-project",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "LOG_LEVEL": "DEBUG"},
@@ -209,6 +231,47 @@ def test_parse_config(
 ) -> None:
     with expected_exception:
         assert parse_config(tool_padeploy, PROJECT_DIR) == expected_config
+
+
+NOT_INSIDE = pytest.raises(ConfigError, match="X patterns must be paths inside the project")
+OUTSIDE = pytest.raises(ConfigError, match="X pattern .* is outside the project")
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected_exception", "expected"),
+    [
+        pytest.param("static/", nullcontext(), ("static/",), id="relative"),
+        pytest.param("./static//a.png", nullcontext(), ("static/a.png",), id="normalized"),
+        pytest.param("**/*.py", nullcontext(), ("**/*.py",), id="wildcards-kept"),
+        pytest.param("{site}/static/", nullcontext(), ("static/",), id="absolute-made-relative"),
+        pytest.param(
+            "{site}/static/*.png", nullcontext(), ("static/*.png",), id="absolute-with-wildcard"
+        ),
+        pytest.param(
+            "{link}/static/a.png", nullcontext(), ("static/a.png",), id="absolute-via-symlink"
+        ),
+        pytest.param("", NOT_INSIDE, None, id="empty"),
+        pytest.param("../x", NOT_INSIDE, None, id="dot-dot"),
+        pytest.param("a/../b", NOT_INSIDE, None, id="dot-dot-inside"),
+        pytest.param("{site}/a/../b", NOT_INSIDE, None, id="absolute-dot-dot-inside"),
+        pytest.param("{site}/", NOT_INSIDE, None, id="project-dir-itself"),
+        pytest.param("{other}/x", OUTSIDE, None, id="absolute-outside-project"),
+        pytest.param("/static/", OUTSIDE, None, id="leading-slash-is-absolute"),
+    ],
+)
+def test_check_patterns(
+    tmp_path: Path,
+    pattern: str,
+    expected_exception: AbstractContextManager[Any],
+    expected: tuple[str, ...] | None,
+) -> None:
+    (tmp_path / "site").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "site")
+    pattern = pattern.format(
+        site=tmp_path / "site", link=tmp_path / "link", other=tmp_path / "other"
+    )
+    with expected_exception:
+        assert check_patterns("X", [pattern], tmp_path / "site") == expected
 
 
 @pytest.mark.parametrize(
@@ -348,7 +411,7 @@ def test_load_config(
         assert load_config(tmp_path / start) == expected_config
 
 
-MISSING_TOKEN = pytest.raises(ConfigError, match="needs API_TOKEN: .* PADEPLOY_API_TOKEN")
+MISSING_TOKEN = pytest.raises(MissingTokenError, match="needs API_TOKEN: .* PADEPLOY_API_TOKEN")
 
 
 @pytest.mark.parametrize(
