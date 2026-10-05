@@ -13,6 +13,7 @@ from padeploy.config import (
     Config,
     ConfigError,
     Group,
+    MissingTokenError,
     check_patterns,
     load_config,
     load_token,
@@ -410,7 +411,7 @@ def test_load_config(
         assert load_config(tmp_path / start) == expected_config
 
 
-MISSING_TOKEN = pytest.raises(ConfigError, match="needs API_TOKEN: .* PADEPLOY_API_TOKEN")
+MISSING_TOKEN = pytest.raises(MissingTokenError, match="needs API_TOKEN: .* PADEPLOY_API_TOKEN")
 
 
 @pytest.mark.parametrize(

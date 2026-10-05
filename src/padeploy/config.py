@@ -19,6 +19,10 @@ class ConfigError(Exception):
     """The project's padeploy configuration is missing or invalid."""
 
 
+class MissingTokenError(ConfigError):
+    """``API_TOKEN`` isn't set."""
+
+
 @dataclass(frozen=True)
 class Group:
     """Named set of path patterns. Groups with ``default=False`` deploy only with ``--with``."""
@@ -127,7 +131,7 @@ def load_token(project_dir: Path) -> str:
     """Return ``API_TOKEN`` from the environment or ``.padeploy_secrets.toml``."""
     token = os.environ.get(ENV_PREFIX + TOKEN_KEY) or read_secrets(project_dir).get(TOKEN_KEY)
     if not token:
-        raise ConfigError(
+        raise MissingTokenError(
             f"padeploy needs {TOKEN_KEY}: set it in {SECRETS_FILE}, or as"
             f" {ENV_PREFIX}{TOKEN_KEY} in the environment"
         )
