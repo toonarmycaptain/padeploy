@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Patterns can be absolute paths inside the project.
+- `.padeploy_secrets.toml` is excluded by default.
+
+### Changed
+- Patterns in `INCLUDE`, `EXCLUDE` and `GROUPS` are checked when config loads: empty ones, ones containing `..`, and ones outside the project are errors.
+
 ## [0.1.0] - 2026-10-03
 
 ### Added

@@ -3,9 +3,9 @@
 import logging
 import os
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 DEFAULT_HOST = "www.pythonanywhere.com"
@@ -29,7 +29,7 @@ class Group:
 
 # Flask-friendly defaults. Patterns are globs matched against repo-relative paths;
 # a trailing "/" means everything under that directory.
-DEFAULT_EXCLUDE = ("tests/", ".github/", ".pre-commit-config.yaml")
+DEFAULT_EXCLUDE = ("tests/", ".github/", ".pre-commit-config.yaml", SECRETS_FILE)
 DEFAULT_GROUPS: Mapping[str, Group] = {
     "code": Group(("**/*.py", "**/templates/")),
     "assets": Group(("static/",)),
@@ -116,9 +116,9 @@ def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
         remote_dir=remote_dir.rstrip("/"),
         domain=section.get("DOMAIN") or f"{section['USER']}.pythonanywhere.com",
         host=section.get("HOST") or DEFAULT_HOST,
-        include=_str_tuple("INCLUDE", section.get("INCLUDE", [])),
-        exclude=DEFAULT_EXCLUDE + _str_tuple("EXCLUDE", section.get("EXCLUDE", [])),
-        groups={**DEFAULT_GROUPS, **_groups(section.get("GROUPS", {}))},
+        include=_patterns("INCLUDE", section.get("INCLUDE", []), project_dir),
+        exclude=DEFAULT_EXCLUDE + _patterns("EXCLUDE", section.get("EXCLUDE", []), project_dir),
+        groups={**DEFAULT_GROUPS, **_groups(section.get("GROUPS", {}), project_dir)},
         log_level=log_level,
     )
 
@@ -158,13 +158,42 @@ def _toml_value(name: str, text: str) -> Any:
         raise ConfigError(f'{name} must be a TOML value, e.g. ["scripts/"]: {e}') from e
 
 
-def _str_tuple(where: str, value: Any) -> tuple[str, ...]:
+def _patterns(where: str, value: Any, project_dir: Path) -> tuple[str, ...]:
+    """``value`` as checked patterns (see ``check_patterns``); it must be a list of strings."""
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ConfigError(f'{where} must be a list of strings, e.g. ["static/"], got {value!r}')
-    return tuple(value)
+    return check_patterns(where, value, project_dir)
 
 
-def _groups(raw: Any) -> dict[str, Group]:
+def check_patterns(where: str, patterns: Sequence[str], project_dir: Path) -> tuple[str, ...]:
+    """
+    ``patterns`` as git writes paths: /-separated and relative to ``project_dir``.
+
+    Paths follow the OS's rules; absolute paths inside the project are made relative to it.
+    Empty patterns, and ones outside the project, are errors.
+    """
+    root = project_dir.resolve()
+    checked = []
+    for pattern in patterns:
+        path = PurePath(pattern)
+        # ".." is rejected as written: resolving an absolute path would collapse it.
+        if path.is_absolute() and ".." not in path.parts:
+            # Resolve symlinks in the parent only, as git tracks a symlink by its own name.
+            path = Path(pattern).parent.resolve() / path.name
+            if not path.is_relative_to(root):
+                raise ConfigError(f"{where} pattern {pattern!r} is outside the project, {root}")
+            path = path.relative_to(root)
+        if path.anchor or ".." in path.parts or not path.parts:
+            raise ConfigError(
+                f"{where} patterns must be paths inside the project, without '..', e.g. static/,"
+                f" got {pattern!r}"
+            )
+        relative = path.as_posix()
+        checked.append(relative + "/" if pattern.endswith(("/", os.sep)) else relative)
+    return tuple(checked)
+
+
+def _groups(raw: Any, project_dir: Path) -> dict[str, Group]:
     """``{ name = { paths = [...], default = false } }`` → Groups."""
     example = '{ data = { paths = ["data.db"], default = false } }'
     if not isinstance(raw, Mapping):
@@ -178,6 +207,6 @@ def _groups(raw: Any) -> dict[str, Group]:
             or not isinstance(group.get("default", True), bool)
         ):
             raise ConfigError(f"GROUPS.{name} must be like {example}, got {group!r}")
-        paths = _str_tuple(f"GROUPS.{name}.paths", group["paths"])
+        paths = _patterns(f"GROUPS.{name}.paths", group["paths"], project_dir)
         groups[name] = Group(paths, group.get("default", True))
     return groups
