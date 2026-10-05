@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-05
+
 ### Added
 - `padeploy deploy` uploads the project's git-tracked files to `REMOTE_DIR` and reloads the web app, exiting non-zero without reloading if any upload fails. Options: `--changes`, `--staged`, `--since COMMIT`, `--with GROUP`, `--only GROUP`, `--code`, `--include`/`--exclude` (comma-separated, repeatable), `--dry-run`, `--no-reload`.
 - `INCLUDE`, `EXCLUDE` and `GROUPS` now work. Opt-in groups (`default = false`) can hold untracked files; .gitignored ones must be named exactly, without wildcards.
