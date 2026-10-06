@@ -17,7 +17,7 @@ from .config import (
     load_token,
 )
 from .deploy import UV_FILES, find_missing, upload_files
-from .selection import SelectionError, select_files
+from .selection import SelectionError, include_warnings, select_files
 
 
 class _EchoHandler(logging.Handler):
@@ -95,16 +95,20 @@ def deploy(
     if code and only:
         raise click.UsageError("Use --code or --only, not both.")
     config = _load_config(verbose)
+    include_patterns = check_patterns("--include", _split(include), config.project_dir)
+    exclude_patterns = check_patterns("--exclude", _split(exclude), config.project_dir)
     files = select_files(
         config,
         since=since,
         changes=changes,
         staged=staged,
-        include=check_patterns("--include", _split(include), config.project_dir),
-        exclude=check_patterns("--exclude", _split(exclude), config.project_dir),
+        include=include_patterns,
+        exclude=exclude_patterns,
         with_groups=with_groups,
         only="code" if code else only,
     )
+    for warning in include_warnings(config, include_patterns, exclude_patterns):
+        click.echo(f"Warning: {warning}", err=True)
     missing = find_missing(config, files)
     for path in missing:
         click.echo(f"Skipping {path}: not found")

@@ -131,7 +131,8 @@ def patch_deploy(
     missing: Sequence[str] = (),
 ) -> tuple[Mock, Mock, Mock]:
     """
-    Stub patch_reload functionality, file selection, missing-file check and uploads.
+    Stub patch_reload functionality, file selection, include warnings, missing-file check and
+    uploads.
 
     An exception in ``results`` is raised when the uploads reach it.
     Returns the select_files, upload_files and client mocks.
@@ -147,6 +148,7 @@ def patch_deploy(
     select_files = Mock(side_effect=[files])
     upload_files = Mock(side_effect=uploads)
     monkeypatch.setattr(cli, "select_files", select_files)
+    monkeypatch.setattr(cli, "include_warnings", Mock(return_value=[]))
     monkeypatch.setattr(cli, "find_missing", Mock(return_value=list(missing)))
     monkeypatch.setattr(cli, "upload_files", upload_files)
     return select_files, upload_files, client_class
@@ -387,6 +389,18 @@ def test_deploy_skips_missing_files(
     _, upload_files, _ = patch_deploy(monkeypatch, files=files, missing=["old.py"])
     result = CliRunner().invoke(cli.main, ["deploy", *args])
     assert (result.stdout, [c.args[2] for c in upload_files.mock_calls]) == expected
+
+
+@pytest.mark.parametrize("args", [[], ["--dry-run"]], ids=["deploy", "dry-run"])
+def test_deploy_prints_include_warnings(monkeypatch: pytest.MonkeyPatch, args: list[str]) -> None:
+    patch_deploy(monkeypatch)
+    include_warnings = Mock(return_value=["INCLUDE pattern 'a.svg' matches nothing"])
+    monkeypatch.setattr(cli, "include_warnings", include_warnings)
+    result = CliRunner().invoke(cli.main, ["deploy", "--include", "a.svg", *args])
+    assert (include_warnings.mock_calls, result.stderr) == (
+        [call(CONFIG, ("a.svg",), ())],
+        "Warning: INCLUDE pattern 'a.svg' matches nothing\n",
+    )
 
 
 @pytest.mark.parametrize(

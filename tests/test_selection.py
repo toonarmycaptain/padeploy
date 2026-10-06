@@ -6,7 +6,14 @@ from typing import Any
 import pytest
 
 from padeploy.config import Config, parse_config
-from padeploy.selection import SelectionError, filter_files, git_files, matches, select_files
+from padeploy.selection import (
+    SelectionError,
+    filter_files,
+    git_files,
+    include_warnings,
+    matches,
+    select_files,
+)
 
 
 def make_config(project_dir: Path = Path("/project"), **extra: Any) -> Config:
@@ -149,9 +156,13 @@ def test_unknown_group_raises(kwargs: dict[str, Any]) -> None:
 
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
-    """A project in site/ of a repo, with a commit tagged ``first`` and work in progress."""
+    """A project in site/ of a repo, with a commit tagged ``first`` and work in progress.
+
+    ``rm_cached.py`` and ``rm_cached_staged.py`` are removed from git but kept on disk.
+    """
     git(tmp_path, "init")
     write(tmp_path, "README.md", "site/app.py", "site/db.py", "site/old.py")
+    write(tmp_path, "site/rm_cached.py", "site/rm_cached_staged.py")
     git(tmp_path, "add", ".")
     git(tmp_path, "commit", "-m", "first")
     git(tmp_path, "tag", "first")
@@ -160,11 +171,13 @@ def project_dir(tmp_path: Path) -> Path:
     write(tmp_path, "site/new.py")
     (tmp_path / "README.md").write_text("changed")
     git(tmp_path, "add", "-A")
+    git(tmp_path, "rm", "--cached", "site/rm_cached.py")
     git(tmp_path, "commit", "-m", "second")
     (tmp_path / "site/app.py").write_text("changed, unstaged")
     (tmp_path / "README.md").write_text("changed again")
     write(tmp_path, "site/staged.py", "site/untracked.py")
     git(tmp_path, "add", "site/staged.py")
+    git(tmp_path, "rm", "--cached", "site/rm_cached_staged.py")
     return tmp_path / "site"
 
 
@@ -172,7 +185,7 @@ def project_dir(tmp_path: Path) -> Path:
     ("kwargs", "expected"),
     [
         pytest.param({}, ["app.py", "db.py", "new.py", "staged.py"], id="all-tracked"),
-        pytest.param({"since": "first"}, ["db.py", "new.py", "old.py"], id="since"),
+        pytest.param({"since": "first"}, ["db.py", "new.py"], id="since"),
         pytest.param({"changes": True}, ["app.py", "staged.py"], id="changes"),
         pytest.param({"staged": True}, ["staged.py"], id="staged"),
     ],
@@ -253,3 +266,50 @@ def test_select_files(tmp_path: Path, with_groups: list[str], expected: list[str
     groups = {name: {"paths": paths[name], "default": False} for name in with_groups}
     config = make_config(tmp_path, GROUPS=groups)
     assert select_files(config, with_groups=with_groups) == expected
+
+
+NOT_UPLOADING = "matches INCLUDE but isn't tracked by git; not uploading it"
+
+
+@pytest.mark.parametrize(
+    ("config_include", "kwargs", "expected"),
+    [
+        pytest.param([], {}, [], id="no-include"),
+        pytest.param(["app.py"], {"include": ["static/site.css"]}, [], id="tracked-and-unchanged"),
+        pytest.param(["favicon.svg"], {}, [f"favicon.svg {NOT_UPLOADING}"], id="untracked-file"),
+        pytest.param(
+            [],
+            {"include": ["static/"]},
+            [f"static/new.css {NOT_UPLOADING}"],
+            id="untracked-file-beside-tracked-from-flag",
+        ),
+        pytest.param(["drafts/"], {"exclude": ["drafts/"]}, [], id="excluded-untracked-file"),
+        pytest.param(["data/"], {}, [], id="opt-in-group-untracked-file"),
+        pytest.param(
+            ["build/"],
+            {},
+            [
+                "'build/' is in INCLUDE but not tracked by git; commit it or add it to an opt-in"
+                " group"
+            ],
+            id="gitignored-on-disk",
+        ),
+        pytest.param(
+            ["statc/"],
+            {"include": ["*.gif"]},
+            ["INCLUDE pattern 'statc/' matches nothing", "INCLUDE pattern '*.gif' matches nothing"],
+            id="matches-nothing",
+        ),
+    ],
+)
+def test_include_warnings(
+    tmp_path: Path, config_include: list[str], kwargs: dict[str, Any], expected: list[str]
+) -> None:
+    git(tmp_path, "init")
+    write(tmp_path, "app.py", "static/site.css")
+    (tmp_path / ".gitignore").write_text("build/\n")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-m", "first")
+    write(tmp_path, "favicon.svg", "static/new.css", "drafts/post.md", "data/x.csv", "build/out.js")
+    config = make_config(tmp_path, INCLUDE=config_include)
+    assert include_warnings(config, **kwargs) == expected

@@ -97,7 +97,8 @@ REMOTE_DIR = "/home/yourname/mysite"
 By default, `deploy` uploads the files git tracks, except `tests/`, `.github/`,
 `.pre-commit-config.yaml` and `.padeploy_secrets.toml`. To change which files it uploads:
 
-- `INCLUDE`: only upload files matching these patterns.
+- `INCLUDE`: only upload files matching these patterns. `deploy` warns about patterns that match
+  no tracked file, and untracked files that would otherwise match (unless explicitly gitignored/excluded/opt-in).
 - `EXCLUDE`: never upload files matching these patterns. These add to the defaults above, which
   can't currently be removed.
 - `GROUPS`: named sets of patterns, for `--only` and `--with`. The built-in groups are `code`
