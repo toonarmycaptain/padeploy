@@ -111,15 +111,16 @@ def git_files(
     """Git-tracked files under ``project_dir``, relative to it.
 
     All of them by default, or only those changed between ``since`` and HEAD, those that differ
-    from HEAD (``changes``: staged or not), or those that are staged (``staged``). These include
-    files deleted since.
+    from HEAD (``changes``: staged or not), or those that are staged (``staged``). Deletions,
+    including ``git rm --cached`` files kept on disk, are left out.
     """
+    diff = ("diff", "-z", "--name-only", "--relative", "--diff-filter=d")
     if since:
-        return _git(project_dir, "diff", "-z", "--name-only", "--relative", since, "HEAD")
+        return _git(project_dir, *diff, since, "HEAD")
     if changes:
-        return _git(project_dir, "diff", "-z", "--name-only", "--relative", "HEAD")
+        return _git(project_dir, *diff, "HEAD")
     if staged:
-        return _git(project_dir, "diff", "-z", "--name-only", "--relative", "--cached")
+        return _git(project_dir, *diff, "--cached")
     return _git(project_dir, "ls-files", "-z")
 
 

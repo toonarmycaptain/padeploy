@@ -149,9 +149,13 @@ def test_unknown_group_raises(kwargs: dict[str, Any]) -> None:
 
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
-    """A project in site/ of a repo, with a commit tagged ``first`` and work in progress."""
+    """A project in site/ of a repo, with a commit tagged ``first`` and work in progress.
+
+    ``rm_cached.py`` and ``rm_cached_staged.py`` are removed from git but kept on disk.
+    """
     git(tmp_path, "init")
     write(tmp_path, "README.md", "site/app.py", "site/db.py", "site/old.py")
+    write(tmp_path, "site/rm_cached.py", "site/rm_cached_staged.py")
     git(tmp_path, "add", ".")
     git(tmp_path, "commit", "-m", "first")
     git(tmp_path, "tag", "first")
@@ -160,11 +164,13 @@ def project_dir(tmp_path: Path) -> Path:
     write(tmp_path, "site/new.py")
     (tmp_path / "README.md").write_text("changed")
     git(tmp_path, "add", "-A")
+    git(tmp_path, "rm", "--cached", "site/rm_cached.py")
     git(tmp_path, "commit", "-m", "second")
     (tmp_path / "site/app.py").write_text("changed, unstaged")
     (tmp_path / "README.md").write_text("changed again")
     write(tmp_path, "site/staged.py", "site/untracked.py")
     git(tmp_path, "add", "site/staged.py")
+    git(tmp_path, "rm", "--cached", "site/rm_cached_staged.py")
     return tmp_path / "site"
 
 
@@ -172,7 +178,7 @@ def project_dir(tmp_path: Path) -> Path:
     ("kwargs", "expected"),
     [
         pytest.param({}, ["app.py", "db.py", "new.py", "staged.py"], id="all-tracked"),
-        pytest.param({"since": "first"}, ["db.py", "new.py", "old.py"], id="since"),
+        pytest.param({"since": "first"}, ["db.py", "new.py"], id="since"),
         pytest.param({"changes": True}, ["app.py", "staged.py"], id="changes"),
         pytest.param({"staged": True}, ["staged.py"], id="staged"),
     ],
