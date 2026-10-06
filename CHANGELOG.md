@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - `--changes`, `--staged` and `--since` no longer upload files removed from git with `git rm --cached` but kept on disk.
+- `deploy` warns about `INCLUDE` and `--include` patterns that match no tracked file, and about untracked files they match (unless gitignored, excluded or in an opt-in group). These files were skipped silently.
 
 ## [0.2.0] - 2026-10-05
 

@@ -69,6 +69,42 @@ def filter_files(
     return selected
 
 
+def include_warnings(
+    config: Config, include: Sequence[str] = (), exclude: Sequence[str] = ()
+) -> list[str]:
+    """Warnings about include patterns (config's plus these), which only match tracked files.
+
+    - Each pattern matching no file git lists: one gitignored on disk, or nothing.
+    - Each untracked, unignored file an include matches, unless it's excluded (config's plus
+      ``exclude``) or in an opt-in group.
+
+    All tracked files count, whatever the git mode, so ``--changes`` doesn't warn about unchanged
+    ones.
+    """
+    patterns = (*config.include, *include)
+    if not patterns:
+        return []
+    tracked = git_files(config.project_dir)
+    untracked = _git(config.project_dir, "ls-files", "-z", "--others", "--exclude-standard")
+    warnings = []
+    for pattern in patterns:
+        if any(matches(path, [pattern]) for path in (*tracked, *untracked)):
+            continue
+        if any(config.project_dir.glob(pattern)):
+            warnings.append(
+                f"'{pattern}' is in INCLUDE but not tracked by git; commit it or add it to an"
+                " opt-in group"
+            )
+        else:
+            warnings.append(f"INCLUDE pattern '{pattern}' matches nothing")
+    opt_in = [path for group in config.groups.values() if not group.default for path in group.paths]
+    skipped = (*config.exclude, *exclude, *opt_in)
+    for path in untracked:
+        if matches(path, patterns) and not matches(path, skipped):
+            warnings.append(f"{path} matches INCLUDE but isn't tracked by git; not uploading it")
+    return warnings
+
+
 def _group_patterns(
     config: Config, with_groups: Sequence[str], only: str | None
 ) -> tuple[list[str], list[str], list[str]]:

@@ -6,7 +6,14 @@ from typing import Any
 import pytest
 
 from padeploy.config import Config, parse_config
-from padeploy.selection import SelectionError, filter_files, git_files, matches, select_files
+from padeploy.selection import (
+    SelectionError,
+    filter_files,
+    git_files,
+    include_warnings,
+    matches,
+    select_files,
+)
 
 
 def make_config(project_dir: Path = Path("/project"), **extra: Any) -> Config:
@@ -259,3 +266,50 @@ def test_select_files(tmp_path: Path, with_groups: list[str], expected: list[str
     groups = {name: {"paths": paths[name], "default": False} for name in with_groups}
     config = make_config(tmp_path, GROUPS=groups)
     assert select_files(config, with_groups=with_groups) == expected
+
+
+NOT_UPLOADING = "matches INCLUDE but isn't tracked by git; not uploading it"
+
+
+@pytest.mark.parametrize(
+    ("config_include", "kwargs", "expected"),
+    [
+        pytest.param([], {}, [], id="no-include"),
+        pytest.param(["app.py"], {"include": ["static/site.css"]}, [], id="tracked-and-unchanged"),
+        pytest.param(["favicon.svg"], {}, [f"favicon.svg {NOT_UPLOADING}"], id="untracked-file"),
+        pytest.param(
+            [],
+            {"include": ["static/"]},
+            [f"static/new.css {NOT_UPLOADING}"],
+            id="untracked-file-beside-tracked-from-flag",
+        ),
+        pytest.param(["drafts/"], {"exclude": ["drafts/"]}, [], id="excluded-untracked-file"),
+        pytest.param(["data/"], {}, [], id="opt-in-group-untracked-file"),
+        pytest.param(
+            ["build/"],
+            {},
+            [
+                "'build/' is in INCLUDE but not tracked by git; commit it or add it to an opt-in"
+                " group"
+            ],
+            id="gitignored-on-disk",
+        ),
+        pytest.param(
+            ["statc/"],
+            {"include": ["*.gif"]},
+            ["INCLUDE pattern 'statc/' matches nothing", "INCLUDE pattern '*.gif' matches nothing"],
+            id="matches-nothing",
+        ),
+    ],
+)
+def test_include_warnings(
+    tmp_path: Path, config_include: list[str], kwargs: dict[str, Any], expected: list[str]
+) -> None:
+    git(tmp_path, "init")
+    write(tmp_path, "app.py", "static/site.css")
+    (tmp_path / ".gitignore").write_text("build/\n")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-m", "first")
+    write(tmp_path, "favicon.svg", "static/new.css", "drafts/post.md", "data/x.csv", "build/out.js")
+    config = make_config(tmp_path, INCLUDE=config_include)
+    assert include_warnings(config, **kwargs) == expected
