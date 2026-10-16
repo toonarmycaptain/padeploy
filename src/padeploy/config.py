@@ -11,6 +11,7 @@ from typing import Any
 DEFAULT_HOST = "www.pythonanywhere.com"
 DEFAULT_LOG_LEVEL = "WARNING"
 TOKEN_KEY = "API_TOKEN"
+MY_IP_KEY = "MY_IP"
 ENV_PREFIX = "PADEPLOY_"
 SECRETS_FILE = ".padeploy_secrets.toml"
 
@@ -90,11 +91,12 @@ def load_config(start: Path | None = None) -> Config:
 
 def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
     """Validate config keyed as in ``[tool.padeploy]``, and fill in defaults."""
-    if TOKEN_KEY in section:
-        raise ConfigError(
-            f"{TOKEN_KEY} can't go in pyproject.toml: set it in {SECRETS_FILE}, or as"
-            f" {ENV_PREFIX}{TOKEN_KEY} in the environment"
-        )
+    for key in (TOKEN_KEY, MY_IP_KEY):
+        if key in section:
+            raise ConfigError(
+                f"{key} can't go in pyproject.toml: set it in {SECRETS_FILE}, or as"
+                f" {ENV_PREFIX}{key} in the environment"
+            )
     unknown = sorted(set(section) - set(_KEYS))
     if unknown:
         raise ConfigError(f"Unknown config key(s): {', '.join(unknown)}")
@@ -129,15 +131,25 @@ def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
 
 def load_token(project_dir: Path) -> str:
     """Return ``API_TOKEN`` from the environment or ``.padeploy_secrets.toml``."""
-    token = os.environ.get(ENV_PREFIX + TOKEN_KEY) or read_secrets(project_dir).get(TOKEN_KEY)
-    if not token:
-        raise MissingTokenError(
-            f"padeploy needs {TOKEN_KEY}: set it in {SECRETS_FILE}, or as"
-            f" {ENV_PREFIX}{TOKEN_KEY} in the environment"
-        )
-    if not isinstance(token, str):
-        raise ConfigError(f"{TOKEN_KEY} in {SECRETS_FILE} must be a string")
-    return token
+    if token := _secret(project_dir, TOKEN_KEY):
+        return token
+    raise MissingTokenError(
+        f"padeploy needs {TOKEN_KEY}: set it in {SECRETS_FILE}, or as"
+        f" {ENV_PREFIX}{TOKEN_KEY} in the environment"
+    )
+
+
+def load_my_ip(project_dir: Path) -> str:
+    """Return ``MY_IP`` from the environment or ``.padeploy_secrets.toml``; empty if unset."""
+    return _secret(project_dir, MY_IP_KEY)
+
+
+def _secret(project_dir: Path, key: str) -> str:
+    """``key`` from the environment or ``.padeploy_secrets.toml``; empty if unset."""
+    value = os.environ.get(ENV_PREFIX + key) or read_secrets(project_dir).get(key) or ""
+    if not isinstance(value, str):
+        raise ConfigError(f"{key} in {SECRETS_FILE} must be a string")
+    return value
 
 
 def read_secrets(project_dir: Path) -> dict[str, Any]:

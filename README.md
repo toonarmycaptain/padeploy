@@ -38,6 +38,32 @@ uv run padeploy reload
 
 Reloads the web app. Exits non-zero if the reload fails.
 
+```bash
+uv run padeploy traffic
+```
+
+Summarizes the web app's access log: how many requests came from you and how many from everyone
+else, then everyone else's top status codes, errors, paths and IPs. Your requests are the ones from
+`--my-ip`, else `MY_IP`, else your public IPs as ipify.org reports them. An IPv6 address counts
+its whole /64, the network your home's devices share and change their addresses within; give a
+network instead, e.g. `2001:db8:1:200::/56`, to set the range yourself. By default it reads only
+the current log.
+
+| Option | |
+|---|---|
+| `--my-ip IPS` | Your IP addresses or networks, comma-separated. Overrides `MY_IP`. |
+| `--all` | Include every rotated log. |
+| `--since DATE` | Only requests from `DATE` (YYYY-MM-DD, UTC) on. |
+| `--until DATE` | Only requests up to and including `DATE`. |
+| `--month [MONTH]` | Only the last 30 days, or a calendar month: `2026-07`, or `July` for the most recent July. |
+| `--year [YEAR]` | Only the last 365 days, or a calendar year, e.g. `2026`. |
+| `--detail` | Also list everyone else's most recent requests. |
+| `--top N` | Length of the top lists, or `false` for no limit. Default: 10. |
+
+PythonAnywhere keeps a limited number of old logs, so how far back they go depends on your
+traffic; a busy site's logs may cover only a couple of weeks. If a period starts before the oldest log,
+the report notes how far back the logs go.
+
 If PythonAnywhere rate-limits padeploy, it waits and retries.
 
 ## Config
@@ -63,6 +89,7 @@ override one or more values in CI via env vars.
 | `INCLUDE` | Patterns; if set, `deploy` only uploads files matching one. See [Choosing files](#choosing-files). |
 | `EXCLUDE` | Patterns `deploy` never uploads, added to the defaults. |
 | `GROUPS` | Named sets of patterns, for `--only` and `--with`. |
+| `MY_IP` | Your IP addresses or networks, comma-separated, for `traffic`. Not allowed in pyproject.toml. |
 
 `DOMAIN` is the web app's name on PythonAnywhere, not necessarily the hostname visitors use. Set it
 only when the web app is registered on PythonAnywhere under a custom domain.<br>
