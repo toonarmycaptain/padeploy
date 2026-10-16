@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
 ### Added
 - `padeploy traffic` summarizes web app's access log/s, counting your requests separately. Your IPs come from `config --my-ip`/`MY_IP` or detected via ipify.org; networks work too, and an IPv6 address counts its whole /64. Options: `--my-ip`, `--all`, `--since DATE`, `--until DATE`, `--month [MONTH]`, `--year [YEAR]`, `--detail`, `--top N` (`false` for no limit).
 - `MY_IP` config key, from the environment (`PADEPLOY_MY_IP`) or `.padeploy_secrets.toml` only.
