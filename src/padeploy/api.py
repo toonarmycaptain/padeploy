@@ -76,6 +76,20 @@ class PAClient:
         if not response.ok:
             raise UploadError(f"Upload failed ({response.status_code}): {_detail(response)}")
 
+    def get_file(self, path: str) -> bytes:
+        """The content of the file at the absolute ``path``."""
+        response = self._request("GET", f"/files/path{quote(path)}")
+        if not response.ok:
+            raise PAError(f"Reading {path} failed ({response.status_code}): {_detail(response)}")
+        return response.content
+
+    def list_dir(self, path: str) -> list[str]:
+        """The names of the files and directories in the directory at the absolute ``path``."""
+        response = self._request("GET", f"/files/path{quote(path)}")
+        if not response.ok:
+            raise PAError(f"Listing {path} failed ({response.status_code}): {_detail(response)}")
+        return list(response.json())
+
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         """Send a request, retrying on 429 (rate limited) with backoff."""
         url = self.base_url + path

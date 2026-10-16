@@ -1,7 +1,8 @@
-"""Command-line interface: a thin layer over config, api, selection and deploy."""
+"""Command-line interface: a thin layer over config, api, selection, deploy and traffic."""
 
 import logging
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +15,12 @@ from .config import (
     MissingTokenError,
     check_patterns,
     load_config,
+    load_my_ip,
     load_token,
 )
 from .deploy import UV_FILES, find_missing, upload_files
 from .selection import SelectionError, include_warnings, select_files
+from .traffic import LOG_DIR, detect_public_ips, parse_networks, period, read_logs, report
 
 
 class _EchoHandler(logging.Handler):
@@ -166,6 +169,107 @@ def _reload(client: PAClient, domain: str) -> None:
         click.echo(f"Warning: {warning}", err=True)
     else:
         click.echo(f"Reloaded {domain}")
+
+
+def _top(ctx: click.Context, param: click.Parameter, value: str) -> int | None:
+    """``--top``'s value: a number of at least 1, or None for ``false`` (no limit)."""
+    if value.lower() == "false":
+        return None
+    if not value.isdigit() or int(value) < 1:
+        raise click.BadParameter(f"must be a number of at least 1, or false, got {value!r}")
+    return int(value)
+
+
+@main.command()
+@click.option(
+    "--my-ip",
+    metavar="IPS",
+    help="Your IP addresses or networks, comma-separated; IPv6 counts its /64. Overrides MY_IP.",
+)
+@click.option("--all", "all_logs", is_flag=True, help="Include every rotated log.")
+@click.option(
+    "--since",
+    type=click.DateTime(["%Y-%m-%d"]),
+    metavar="DATE",
+    help="Only requests from DATE (YYYY-MM-DD, UTC) on.",
+)
+@click.option(
+    "--until",
+    type=click.DateTime(["%Y-%m-%d"]),
+    metavar="DATE",
+    help="Only requests up to and including DATE.",
+)
+@click.option(
+    "--month",
+    is_flag=False,
+    flag_value="",
+    metavar="[MONTH]",
+    help="The last 30 days, or a month: 2026-07, or July for the latest July.",
+)
+@click.option(
+    "--year",
+    is_flag=False,
+    flag_value="",
+    metavar="[YEAR]",
+    help="The last 365 days, or a calendar year, e.g. 2026.",
+)
+@click.option("--detail", is_flag=True, help="Also list others' most recent requests.")
+@click.option(
+    "--top",
+    default="10",
+    show_default=True,
+    metavar="N",
+    callback=_top,
+    help="Length of the top lists, or false for no limit.",
+)
+@click.pass_obj
+def traffic(
+    verbose: bool,
+    my_ip: str | None,
+    all_logs: bool,
+    since: datetime | None,
+    until: datetime | None,
+    month: str | None,
+    year: str | None,
+    detail: bool,
+    top: int | None,
+) -> None:
+    """Summarize the web app's access log: your requests and everyone else's."""
+    if all_logs + bool(since or until) + (month is not None) + (year is not None) > 1:
+        raise click.UsageError("Use only one of --all, --since/--until, --month and --year.")
+    now = datetime.now(UTC)
+    try:
+        start, end = period(now, since=since, until=until, month=month, year=year)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    config = _load_config(verbose)
+    client = PAClient(config.user, _token(config.project_dir), config.host)
+    try:
+        my_networks = parse_networks(my_ip or load_my_ip(config.project_dir))
+    except ValueError as e:
+        raise click.ClickException(f"{'--my-ip' if my_ip else 'MY_IP'}: {e}") from e
+    if not my_networks:
+        detected = detect_public_ips()
+        my_networks = parse_networks(",".join(detected))
+        if detected:
+            click.echo(
+                f"Auto-detected your IP(s): {', '.join(sorted(detected))}"
+                " (override with --my-ip or MY_IP)."
+            )
+        else:
+            click.echo(
+                "Warning: couldn't auto-detect your IP; counting everything as others'."
+                " Use --my-ip or MY_IP to split out your traffic.",
+                err=True,
+            )
+    # Every log for --all or a lone --until; else back to the start, or by default to now.
+    back_to = None if all_logs or (end and not start) else start or now
+    logs = read_logs(client, config.domain, back_to)
+    if not logs.names:
+        raise click.ClickException(f"No access log found at {LOG_DIR}/{config.domain}.access.log")
+    click.echo(
+        report(config.domain, logs, my_networks, start=start, end=end, top=top, detail=detail)
+    )
 
 
 def _split(values: tuple[str, ...]) -> list[str]:

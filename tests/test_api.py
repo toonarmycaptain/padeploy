@@ -152,6 +152,65 @@ def test_upload(result: requests.Response, expected_exception: AbstractContextMa
         client.upload("/home/bruce/site/app.py", b"")
 
 
+@pytest.mark.parametrize("method", ["get_file", "list_dir"])
+def test_get_file_and_list_dir_send_get_with_quoted_path(method: str) -> None:
+    client, session, _ = make_client(make_response(200, "{}"))
+    getattr(client, method)("/var/log/a b#1.log")
+    assert session.request.call_args_list == [
+        call("GET", f"{BASE}/files/path/var/log/a%20b%231.log", timeout=30.0)
+    ]
+
+
+LISTING = (
+    f'{{"x.access.log": {{"type": "file", "url": "{BASE}/files/path/var/log/x.access.log"}},'
+    f' "nginx": {{"type": "directory", "url": "{BASE}/files/path/var/log/nginx"}}}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("method", "result", "expected_exception", "expected"),
+    [
+        pytest.param(
+            "get_file",
+            make_response(200, "a log line\n"),
+            nullcontext(),
+            b"a log line\n",
+            id="get-file",
+        ),
+        pytest.param(
+            "get_file",
+            make_response(404, "not found"),
+            pytest.raises(PAError, match="^Reading /var/log/x failed \\(404\\): not found$"),
+            None,
+            id="get-file-missing",
+        ),
+        pytest.param(
+            "list_dir",
+            make_response(200, LISTING),
+            nullcontext(),
+            ["x.access.log", "nginx"],
+            id="list-dir-files-and-directories",
+        ),
+        pytest.param(
+            "list_dir",
+            make_response(403, "no"),
+            pytest.raises(PAError, match="^Listing /var/log/x failed \\(403\\): no$"),
+            None,
+            id="list-dir-refused",
+        ),
+    ],
+)
+def test_get_file_and_list_dir(
+    method: str,
+    result: requests.Response,
+    expected_exception: AbstractContextManager[Any],
+    expected: bytes | list[str] | None,
+) -> None:
+    client, _, _ = make_client(result)
+    with expected_exception:
+        assert getattr(client, method)("/var/log/x") == expected
+
+
 @pytest.mark.parametrize(
     ("max_retries", "statuses", "retry_after", "expected_exception", "expected_sleeps"),
     [

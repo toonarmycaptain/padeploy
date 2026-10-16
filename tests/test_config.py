@@ -16,6 +16,7 @@ from padeploy.config import (
     MissingTokenError,
     check_patterns,
     load_config,
+    load_my_ip,
     load_token,
     parse_config,
     read_secrets,
@@ -161,6 +162,12 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             pytest.raises(ConfigError, match="API_TOKEN can't go in pyproject.toml"),
             None,
             id="api-token-not-allowed",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "MY_IP": "1.2.3.4"},
+            pytest.raises(ConfigError, match="MY_IP can't go in pyproject.toml"),
+            None,
+            id="my-ip-not-allowed",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "host": "eu.pythonanywhere.com"},
@@ -470,6 +477,46 @@ def test_load_token(
         (tmp_path / ".padeploy_secrets.toml").write_text(secrets)
     with expected_exception:
         assert load_token(tmp_path) == expected_token
+
+
+@pytest.mark.parametrize(
+    ("env", "secrets", "expected_exception", "expected_ip"),
+    [
+        pytest.param("1.2.3.4", None, nullcontext(), "1.2.3.4", id="environment"),
+        pytest.param(
+            None, 'MY_IP = "1.2.3.4, ::1"\n', nullcontext(), "1.2.3.4, ::1", id="secrets-file"
+        ),
+        pytest.param(
+            "5.6.7.8",
+            'MY_IP = "1.2.3.4"\n',
+            nullcontext(),
+            "5.6.7.8",
+            id="environment-overrides-secrets-file",
+        ),
+        pytest.param(None, None, nullcontext(), "", id="unset-is-empty"),
+        pytest.param(
+            None,
+            'MY_IP = ["1.2.3.4"]\n',
+            pytest.raises(ConfigError, match="MY_IP in .padeploy_secrets.toml must be a string"),
+            None,
+            id="non-string",
+        ),
+    ],
+)
+def test_load_my_ip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env: str | None,
+    secrets: str | None,
+    expected_exception: AbstractContextManager[Any],
+    expected_ip: str | None,
+) -> None:
+    if env is not None:
+        monkeypatch.setenv("PADEPLOY_MY_IP", env)
+    if secrets is not None:
+        (tmp_path / ".padeploy_secrets.toml").write_text(secrets)
+    with expected_exception:
+        assert load_my_ip(tmp_path) == expected_ip
 
 
 @pytest.mark.parametrize(
