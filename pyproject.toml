@@ -14,6 +14,12 @@ dependencies = [
     "requests>=2.34.2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/toonarmycaptain/padeploy"
+Repository = "https://github.com/toonarmycaptain/padeploy"
+Issues = "https://github.com/toonarmycaptain/padeploy/issues"
+Changelog = "https://github.com/toonarmycaptain/padeploy/blob/dev/CHANGELOG.md"
+
 [project.scripts]
 padeploy = "padeploy.cli:main"
 
