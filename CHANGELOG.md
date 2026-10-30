@@ -7,6 +7,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `FRAMEWORK` config key: `flask` (the default, unchanged behaviour) or `django`. Django leaves out every `tests/` directory and `tests.py`, and its `assets` group is every `static/` directory. `deploy` warns when a Django deploy uploads migrations or static files, which need `python manage.py migrate` or `collectstatic` run on PythonAnywhere.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

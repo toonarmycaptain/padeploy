@@ -8,12 +8,13 @@ import pytest
 
 from padeploy.config import (
     DEFAULT_EXCLUDE,
-    DEFAULT_GROUPS,
     DEFAULT_HOST,
+    FRAMEWORKS,
     Config,
     ConfigError,
     Group,
     MissingTokenError,
+    Step,
     check_patterns,
     load_config,
     load_my_ip,
@@ -39,8 +40,9 @@ DEFAULT_CONFIG = Config(
     domain="arthur.pythonanywhere.com",
     host=DEFAULT_HOST,
     include=(),
-    exclude=DEFAULT_EXCLUDE,
-    groups=DEFAULT_GROUPS,
+    exclude=(*DEFAULT_EXCLUDE, "tests/"),
+    groups=FRAMEWORKS["flask"].groups,
+    steps=(),
     log_level="WARNING",
 )
 NO_PADEPLOY_PYPROJECT = "[project]\nname = 'x'\n"
@@ -79,8 +81,37 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "EXCLUDE": ["scripts/"]},
             nullcontext(),
-            replace(DEFAULT_CONFIG, exclude=(*DEFAULT_EXCLUDE, "scripts/")),
+            replace(DEFAULT_CONFIG, exclude=(*DEFAULT_CONFIG.exclude, "scripts/")),
             id="exclude-adds-to-defaults",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "FRAMEWORK": "django"},
+            nullcontext(),
+            replace(
+                DEFAULT_CONFIG,
+                exclude=(*DEFAULT_EXCLUDE, "**/tests/", "**/tests.py"),
+                groups={
+                    "code": Group(("**/*.py", "**/templates/")),
+                    "assets": Group(("**/static/",)),
+                },
+                steps=(
+                    Step("migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)),
+                    Step("static files", "python manage.py collectstatic", ("**/static/",)),
+                ),
+            ),
+            id="framework-django",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "FRAMEWORK": "flask"},
+            nullcontext(),
+            DEFAULT_CONFIG,
+            id="framework-flask-is-the-default",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "FRAMEWORK": "rails"},
+            pytest.raises(ConfigError, match="FRAMEWORK must be one of flask, django, got 'rails'"),
+            None,
+            id="framework-unknown",
         ),
         pytest.param(
             {
@@ -94,7 +125,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             replace(
                 DEFAULT_CONFIG,
                 groups={
-                    "code": DEFAULT_GROUPS["code"],
+                    "code": FRAMEWORKS["flask"].groups["code"],
                     "assets": Group(("static/img/",)),
                     "data": Group(("data.db",), default=False),
                 },
@@ -346,7 +377,7 @@ def test_check_patterns(
             {"PADEPLOY_EXCLUDE": '["scripts/"]'},
             ".",
             nullcontext(),
-            {"exclude": (*DEFAULT_EXCLUDE, "scripts/")},
+            {"exclude": (*DEFAULT_CONFIG.exclude, "scripts/")},
             id="list-in-environment",
         ),
         pytest.param(
@@ -355,7 +386,7 @@ def test_check_patterns(
             {},
             ".",
             nullcontext(),
-            {"groups": {**DEFAULT_GROUPS, "data": Group(("data.db",), default=False)}},
+            {"groups": {**DEFAULT_CONFIG.groups, "data": Group(("data.db",), default=False)}},
             id="table-in-secrets-file",
         ),
         pytest.param(

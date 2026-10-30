@@ -5,7 +5,7 @@ import pytest
 
 from padeploy.api import PAError, UploadError
 from padeploy.config import Config, parse_config
-from padeploy.deploy import find_missing, upload_files
+from padeploy.deploy import find_missing, server_steps, upload_files
 
 
 def make_project(tmp_path: Path) -> Config:
@@ -18,6 +18,44 @@ def make_project(tmp_path: Path) -> Config:
 def test_find_missing_lists_files_not_on_disk(tmp_path: Path) -> None:
     files = ["app.py", "deleted.py", "static", "static/style.css"]
     assert find_missing(make_project(tmp_path), files) == ["deleted.py", "static"]
+
+
+@pytest.mark.parametrize(
+    ("framework", "uploaded", "expected"),
+    [
+        pytest.param("flask", ["app.py", "static/a.css"], [], id="flask-has-no-steps"),
+        pytest.param("django", ["shop/views.py"], [], id="django-code-needs-no-step"),
+        pytest.param(
+            "django",
+            ["shop/migrations/__init__.py"],
+            [],
+            id="django-migrations-package-needs-no-step",
+        ),
+        pytest.param(
+            "django",
+            ["shop/migrations/0002_add_size.py"],
+            ["python manage.py migrate"],
+            id="django-migrations",
+        ),
+        pytest.param(
+            "django",
+            ["shop/static/shop/site.css", "static/b.css"],
+            ["python manage.py collectstatic"],
+            id="django-static-files",
+        ),
+        pytest.param(
+            "django",
+            ["shop/static/shop/site.css", "shop/migrations/0002_add_size.py"],
+            ["python manage.py migrate", "python manage.py collectstatic"],
+            id="django-both",
+        ),
+    ],
+)
+def test_server_steps(framework: str, uploaded: list[str], expected: list[str]) -> None:
+    config = parse_config(
+        {"USER": "x", "REMOTE_DIR": "/home/x/site", "FRAMEWORK": framework}, Path("/project")
+    )
+    assert [step.command for step in server_steps(config, uploaded)] == expected
 
 
 def test_upload_files_reports_each_file(tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import Any
+from typing import Any, NamedTuple
 
 DEFAULT_HOST = "www.pythonanywhere.com"
 DEFAULT_LOG_LEVEL = "WARNING"
@@ -32,18 +32,47 @@ class Group:
     default: bool = True
 
 
-# Flask-friendly defaults. Patterns are globs matched against repo-relative paths;
-# a trailing "/" means everything under that directory.
-DEFAULT_EXCLUDE = ("tests/", ".github/", ".pre-commit-config.yaml", SECRETS_FILE)
-DEFAULT_GROUPS: Mapping[str, Group] = {
-    "code": Group(("**/*.py", "**/templates/")),
-    "assets": Group(("static/",)),
+class Step(NamedTuple):
+    """A server command that uploading files matching ``patterns`` calls for."""
+
+    what: str
+    command: str
+    patterns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Framework:
+    """A web framework's defaults: what to leave out, the groups, and the server steps."""
+
+    exclude: tuple[str, ...]
+    groups: Mapping[str, Group]
+    steps: tuple[Step, ...] = ()
+
+
+# Patterns are globs matched against repo-relative paths; a trailing "/" means everything under
+# that directory. DEFAULT_EXCLUDE applies to every framework.
+DEFAULT_EXCLUDE = (".github/", ".pre-commit-config.yaml", SECRETS_FILE)
+DEFAULT_FRAMEWORK = "flask"
+_CODE = Group(("**/*.py", "**/templates/"))
+FRAMEWORKS: Mapping[str, Framework] = {
+    "flask": Framework(
+        exclude=("tests/",),
+        groups={"code": _CODE, "assets": Group(("static/",))},
+    ),
+    "django": Framework(
+        exclude=("**/tests/", "**/tests.py"),
+        groups={"code": _CODE, "assets": Group(("**/static/",))},
+        steps=(
+            Step("migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)),
+            Step("static files", "python manage.py collectstatic", ("**/static/",)),
+        ),
+    ),
 }
 
 # Each config key has one name, used as-is in [tool.padeploy] and .padeploy_secrets.toml, and with
 # the PADEPLOY_ prefix in the environment, where lists and tables are TOML values,
 # e.g. PADEPLOY_EXCLUDE='["scripts/"]'.
-_STR_KEYS = ("USER", "REMOTE_DIR", "DOMAIN", "HOST", "LOG_LEVEL")
+_STR_KEYS = ("USER", "REMOTE_DIR", "DOMAIN", "HOST", "LOG_LEVEL", "FRAMEWORK")
 _LIST_KEYS = ("INCLUDE", "EXCLUDE")
 _KEYS = (*_STR_KEYS, *_LIST_KEYS, "GROUPS")
 
@@ -58,6 +87,7 @@ class Config:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     groups: Mapping[str, Group]
+    steps: tuple[Step, ...]
     log_level: str
 
 
@@ -115,6 +145,10 @@ def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
     log_level = section.get("LOG_LEVEL") or DEFAULT_LOG_LEVEL
     if log_level not in logging.getLevelNamesMapping():
         raise ConfigError(f"LOG_LEVEL must be a logging level, e.g. DEBUG, got {log_level!r}")
+    name = section.get("FRAMEWORK") or DEFAULT_FRAMEWORK
+    if name not in FRAMEWORKS:
+        raise ConfigError(f"FRAMEWORK must be one of {', '.join(FRAMEWORKS)}, got {name!r}")
+    framework = FRAMEWORKS[name]
 
     return Config(
         project_dir=project_dir,
@@ -123,8 +157,11 @@ def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
         domain=section.get("DOMAIN") or f"{section['USER']}.pythonanywhere.com",
         host=section.get("HOST") or DEFAULT_HOST,
         include=_patterns("INCLUDE", section.get("INCLUDE", []), project_dir),
-        exclude=DEFAULT_EXCLUDE + _patterns("EXCLUDE", section.get("EXCLUDE", []), project_dir),
-        groups={**DEFAULT_GROUPS, **_groups(section.get("GROUPS", {}), project_dir)},
+        exclude=DEFAULT_EXCLUDE
+        + framework.exclude
+        + _patterns("EXCLUDE", section.get("EXCLUDE", []), project_dir),
+        groups={**framework.groups, **_groups(section.get("GROUPS", {}), project_dir)},
+        steps=framework.steps,
         log_level=log_level,
     )
 

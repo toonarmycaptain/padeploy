@@ -86,6 +86,7 @@ override one or more values in CI via env vars.
 | `REMOTE_DIR` | Required. The project's directory on PythonAnywhere, as an absolute path. `deploy` uploads files there. |
 | `DOMAIN` | The web app's name on PythonAnywhere. Default: `yourname.pythonanywhere.com`. |
 | `HOST` | Default: `www.pythonanywhere.com`. EU accounts need `eu.pythonanywhere.com`. |
+| `FRAMEWORK` | `flask` (default) or `django`. Sets the defaults for [Choosing files](#choosing-files). See [Frameworks](#frameworks). |
 | `INCLUDE` | Patterns; if set, `deploy` only uploads files matching one. See [Choosing files](#choosing-files). |
 | `EXCLUDE` | Patterns `deploy` never uploads, added to the defaults. |
 | `GROUPS` | Named sets of patterns, for `--only` and `--with`. |
@@ -121,16 +122,16 @@ REMOTE_DIR = "/home/yourname/mysite"
 
 ### Choosing files
 
-By default, `deploy` uploads the files git tracks, except `tests/`, `.github/`,
-`.pre-commit-config.yaml` and `.padeploy_secrets.toml`. To change which files it uploads:
+By default, `deploy` uploads the files git tracks, except `.github/`, `.pre-commit-config.yaml`,
+`.padeploy_secrets.toml` and tests (see [Frameworks](#frameworks)). To change which files it uploads:
 
 - `INCLUDE`: only upload files matching these patterns. `deploy` warns about patterns that match
   no tracked file, and untracked files that would otherwise match (unless explicitly gitignored/excluded/opt-in).
 - `EXCLUDE`: never upload files matching these patterns. These add to the defaults above, which
   can't currently be removed.
 - `GROUPS`: named sets of patterns, for `--only` and `--with`. The built-in groups are `code`
-  (Python files and templates) and `assets` (`static/`); define one with the same name to replace
-  it.
+  (Python files and templates) and `assets` (static files, see [Frameworks](#frameworks)); define
+  one with the same name to replace it.
 
 A group with `default = false` is opt-in, for files you don't want to upload every time, such as a
 database. Its files are uploaded only with `--with NAME` or `--only NAME`, and then all of them
@@ -153,6 +154,24 @@ data = { paths = ["data.db"], default = false }
 
 In environment variables, these are TOML, e.g. `PADEPLOY_EXCLUDE='["scripts/"]'`. A list from the
 environment or `.padeploy_secrets.toml` replaces the pyproject.toml one rather than adding to it.
+
+### Frameworks
+
+`FRAMEWORK` is `flask` (the default) or `django`. It sets which tests `deploy` leaves out and what
+the `assets` group holds:
+
+- `flask`: leaves out `tests/`; `assets` is `static/`.
+- `django`: leaves out every `tests/` directory and `tests.py`; `assets` is every `static/`
+  directory, so each app's counts.
+
+With `django`, `deploy` also warns when it uploads migrations or static files. They need
+`python manage.py migrate` or `python manage.py collectstatic` run on PythonAnywhere, then
+`padeploy reload`.
+
+```toml
+[tool.padeploy]
+FRAMEWORK = "django"
+```
 
 ## Development
 

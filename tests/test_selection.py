@@ -146,6 +146,42 @@ def test_filter_files(
     assert filter_files(FILES, make_config(**config_extra), **kwargs) == expected
 
 
+DJANGO_FILES = [
+    "manage.py",
+    "shop/views.py",
+    "shop/tests.py",
+    "shop/tests/test_views.py",
+    "shop/static/shop/site.css",
+    "shop/templates/shop/index.html",
+    "shop/migrations/0001_initial.py",
+]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        pytest.param(
+            {},
+            [f for f in DJANGO_FILES if "tests" not in f],
+            id="default-leaves-out-app-tests",
+        ),
+        pytest.param({"only": "assets"}, ["shop/static/shop/site.css"], id="only-app-static"),
+        pytest.param(
+            {"only": "code"},
+            [
+                "manage.py",
+                "shop/views.py",
+                "shop/templates/shop/index.html",
+                "shop/migrations/0001_initial.py",
+            ],
+            id="only-code",
+        ),
+    ],
+)
+def test_filter_files_django(kwargs: dict[str, Any], expected: list[str]) -> None:
+    assert filter_files(DJANGO_FILES, make_config(FRAMEWORK="django"), **kwargs) == expected
+
+
 @pytest.mark.parametrize(
     "kwargs", [{"with_groups": ["nope"]}, {"only": "nope"}], ids=["with", "only"]
 )

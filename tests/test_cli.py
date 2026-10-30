@@ -132,6 +132,7 @@ def patch_deploy(
     token: str | Exception = "secret",
     reload_result: str | Exception | None = None,
     missing: Sequence[str] = (),
+    config: Config = CONFIG,
 ) -> tuple[Mock, Mock, Mock]:
     """
     Stub patch_reload functionality, file selection, include warnings, missing-file check and
@@ -147,7 +148,7 @@ def patch_deploy(
                 raise result
             yield result
 
-    _, client_class = patch_reload(monkeypatch, token=token, reload_result=reload_result)
+    _, client_class = patch_reload(monkeypatch, config, token=token, reload_result=reload_result)
     select_files = Mock(side_effect=[files])
     upload_files = Mock(side_effect=uploads)
     monkeypatch.setattr(cli, "select_files", select_files)
@@ -350,6 +351,22 @@ def test_deploy_output_and_exit_code(
     patch_deploy(monkeypatch, files, results, reload_result=reload_result)
     result = CliRunner().invoke(cli.main, ["deploy", *args])
     assert (result.exit_code, result.stdout, result.stderr) == expected
+
+
+def test_deploy_warns_about_the_frameworks_server_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    django = parse_config(
+        {"USER": "arthur", "REMOTE_DIR": "/home/arthur/arthur", "FRAMEWORK": "django"},
+        Path("/project"),
+    )
+    files = ["shop/migrations/0002_add_size.py", "shop/static/shop/site.css"]
+    patch_deploy(monkeypatch, files, [(path, None) for path in files], config=django)
+    result = CliRunner().invoke(cli.main, ["deploy"])
+    assert result.stderr == (
+        "Warning: uploaded migrations. If they changed, run `python manage.py migrate` on"
+        " PythonAnywhere, then `padeploy reload`.\n"
+        "Warning: uploaded static files. If they changed, run `python manage.py collectstatic` on"
+        " PythonAnywhere, then `padeploy reload`.\n"
+    )
 
 
 @pytest.mark.parametrize(
