@@ -18,7 +18,7 @@ from .config import (
     load_my_ip,
     load_token,
 )
-from .deploy import UV_FILES, find_missing, server_steps, upload_files
+from .deploy import UV_FILES, find_missing, server_commands, upload_files
 from .expiry import describe, is_due
 from .selection import SelectionError, include_warnings, select_files
 from .traffic import LOG_DIR, detect_public_ips, parse_networks, period, read_logs, report
@@ -154,10 +154,10 @@ def _upload(client: PAClient, config: Config, files: list[str]) -> None:
                 " `uv sync` on PythonAnywhere, then `padeploy reload`.",
                 err=True,
             )
-        for step in server_steps(config, uploaded):
+        for server_command in server_commands(config, uploaded):
             click.echo(
-                f"Warning: uploaded {step.what}. If they changed, run `{step.command}` on"
-                " PythonAnywhere, then `padeploy reload`.",
+                f"Warning: uploaded {server_command.what}. If they changed, run"
+                f" `{server_command.command}` on PythonAnywhere, then `padeploy reload`.",
                 err=True,
             )
     if failed:

@@ -32,7 +32,7 @@ class Group:
     default: bool = True
 
 
-class Step(NamedTuple):
+class ServerCommand(NamedTuple):
     """A server command that uploading files matching ``patterns`` calls for."""
 
     what: str
@@ -42,11 +42,11 @@ class Step(NamedTuple):
 
 @dataclass(frozen=True)
 class Framework:
-    """A web framework's defaults: what to leave out, the groups, and the server steps."""
+    """A web framework's defaults: what to leave out, the groups, and the server commands."""
 
     exclude: tuple[str, ...]
     groups: Mapping[str, Group]
-    steps: tuple[Step, ...] = ()
+    server_commands: tuple[ServerCommand, ...] = ()
 
 
 # Patterns are globs matched against repo-relative paths; a trailing "/" means everything under
@@ -62,9 +62,9 @@ FRAMEWORKS: Mapping[str, Framework] = {
     "django": Framework(
         exclude=("**/tests/", "**/tests.py"),
         groups={"code": _CODE, "assets": Group(("**/static/",))},
-        steps=(
-            Step("migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)),
-            Step("static files", "python manage.py collectstatic", ("**/static/",)),
+        server_commands=(
+            ServerCommand("migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)),
+            ServerCommand("static files", "python manage.py collectstatic", ("**/static/",)),
         ),
     ),
 }
@@ -87,7 +87,7 @@ class Config:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     groups: Mapping[str, Group]
-    steps: tuple[Step, ...]
+    server_commands: tuple[ServerCommand, ...]
     log_level: str
 
 
@@ -161,7 +161,7 @@ def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
         + framework.exclude
         + _patterns("EXCLUDE", section.get("EXCLUDE", []), project_dir),
         groups={**framework.groups, **_groups(section.get("GROUPS", {}), project_dir)},
-        steps=framework.steps,
+        server_commands=framework.server_commands,
         log_level=log_level,
     )
 

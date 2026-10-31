@@ -3,16 +3,20 @@
 from collections.abc import Iterable, Iterator, Sequence
 
 from .api import PAClient, UploadError
-from .config import Config, Step
+from .config import Config, ServerCommand
 from .selection import matches
 
 # The server needs `uv sync` after these change.
 UV_FILES = ("pyproject.toml", "uv.lock")
 
 
-def server_steps(config: Config, uploaded: Sequence[str]) -> list[Step]:
-    """The framework's server steps that the ``uploaded`` files call for."""
-    return [step for step in config.steps if any(matches(path, step.patterns) for path in uploaded)]
+def server_commands(config: Config, uploaded: Sequence[str]) -> list[ServerCommand]:
+    """The framework's server commands that the ``uploaded`` files call for."""
+    return [
+        server_command
+        for server_command in config.server_commands
+        if any(matches(path, server_command.patterns) for path in uploaded)
+    ]
 
 
 def find_missing(config: Config, files: Iterable[str]) -> list[str]:

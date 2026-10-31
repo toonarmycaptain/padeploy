@@ -360,7 +360,7 @@ def test_deploy_output_and_exit_code(
     assert (result.exit_code, result.stdout, result.stderr) == expected
 
 
-def test_deploy_warns_about_the_frameworks_server_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deploy_warns_about_the_frameworks_server_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     django = parse_config(
         {"USER": "arthur", "REMOTE_DIR": "/home/arthur/arthur", "FRAMEWORK": "django"},
         Path("/project"),

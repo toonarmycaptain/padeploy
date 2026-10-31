@@ -14,7 +14,7 @@ from padeploy.config import (
     ConfigError,
     Group,
     MissingTokenError,
-    Step,
+    ServerCommand,
     check_patterns,
     load_config,
     load_my_ip,
@@ -42,7 +42,7 @@ DEFAULT_CONFIG = Config(
     include=(),
     exclude=(*DEFAULT_EXCLUDE, "tests/"),
     groups=FRAMEWORKS["flask"].groups,
-    steps=(),
+    server_commands=(),
     log_level="WARNING",
 )
 NO_PADEPLOY_PYPROJECT = "[project]\nname = 'x'\n"
@@ -94,9 +94,13 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
                     "code": Group(("**/*.py", "**/templates/")),
                     "assets": Group(("**/static/",)),
                 },
-                steps=(
-                    Step("migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)),
-                    Step("static files", "python manage.py collectstatic", ("**/static/",)),
+                server_commands=(
+                    ServerCommand(
+                        "migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)
+                    ),
+                    ServerCommand(
+                        "static files", "python manage.py collectstatic", ("**/static/",)
+                    ),
                 ),
             ),
             id="framework-django",

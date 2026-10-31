@@ -5,7 +5,7 @@ import pytest
 
 from padeploy.api import PAError, UploadError
 from padeploy.config import Config, parse_config
-from padeploy.deploy import find_missing, server_steps, upload_files
+from padeploy.deploy import find_missing, server_commands, upload_files
 
 
 def make_project(tmp_path: Path) -> Config:
@@ -23,13 +23,13 @@ def test_find_missing_lists_files_not_on_disk(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("framework", "uploaded", "expected"),
     [
-        pytest.param("flask", ["app.py", "static/a.css"], [], id="flask-has-no-steps"),
-        pytest.param("django", ["shop/views.py"], [], id="django-code-needs-no-step"),
+        pytest.param("flask", ["app.py", "static/a.css"], [], id="flask-has-no-server-commands"),
+        pytest.param("django", ["shop/views.py"], [], id="django-code-needs-no-server-command"),
         pytest.param(
             "django",
             ["shop/migrations/__init__.py"],
             [],
-            id="django-migrations-package-needs-no-step",
+            id="django-migrations-package-needs-no-server-command",
         ),
         pytest.param(
             "django",
@@ -51,11 +51,13 @@ def test_find_missing_lists_files_not_on_disk(tmp_path: Path) -> None:
         ),
     ],
 )
-def test_server_steps(framework: str, uploaded: list[str], expected: list[str]) -> None:
+def test_server_commands(framework: str, uploaded: list[str], expected: list[str]) -> None:
     config = parse_config(
         {"USER": "x", "REMOTE_DIR": "/home/x/site", "FRAMEWORK": framework}, Path("/project")
     )
-    assert [step.command for step in server_steps(config, uploaded)] == expected
+    assert [
+        server_command.command for server_command in server_commands(config, uploaded)
+    ] == expected
 
 
 def test_upload_files_reports_each_file(tmp_path: Path) -> None:
