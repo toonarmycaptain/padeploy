@@ -93,10 +93,14 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
                 groups={
                     "code": Group(("**/*.py", "**/templates/")),
                     "assets": Group(("**/static/",)),
+                    "migrations": Group(("**/migrations/*.py",), default=False),
                 },
                 server_commands=(
                     ServerCommand(
-                        "migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)
+                        "migrations",
+                        "python manage.py migrate",
+                        ("**/migrations/[0-9]*.py",),
+                        group="migrations",
                     ),
                     ServerCommand(
                         "static files", "python manage.py collectstatic", ("**/static/",)

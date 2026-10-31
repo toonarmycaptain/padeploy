@@ -4,7 +4,7 @@ import subprocess
 from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 
-from .config import Config
+from .config import Config, ServerCommand
 
 
 class SelectionError(Exception):
@@ -85,7 +85,7 @@ def include_warnings(
     if not patterns:
         return []
     tracked = git_files(config.project_dir)
-    untracked = _git(config.project_dir, "ls-files", "-z", "--others", "--exclude-standard")
+    untracked = untracked_files(config.project_dir)
     warnings = []
     for pattern in patterns:
         if any(matches(path, [pattern]) for path in (*tracked, *untracked)):
@@ -103,6 +103,21 @@ def include_warnings(
         if matches(path, patterns) and not matches(path, skipped):
             warnings.append(f"{path} matches INCLUDE but isn't tracked by git; not uploading it")
     return warnings
+
+
+def skipped_commands(
+    config: Config, changed: Sequence[str], with_groups: Sequence[str] = (), only: str | None = None
+) -> list[ServerCommand]:
+    """The server commands that ``changed`` files call for, whose opt-in group isn't deployed."""
+    wanted = {*with_groups, *([only] if only else [])}
+    return [
+        server_command
+        for server_command in config.server_commands
+        if (group := config.groups.get(server_command.group))
+        and not group.default
+        and server_command.group not in wanted
+        and any(matches(path, server_command.patterns) for path in changed)
+    ]
 
 
 def _group_patterns(
@@ -158,6 +173,11 @@ def git_files(
     if staged:
         return _git(project_dir, *diff, "--cached")
     return _git(project_dir, "ls-files", "-z")
+
+
+def untracked_files(project_dir: Path) -> list[str]:
+    """Files under ``project_dir`` that git neither tracks nor ignores, relative to it."""
+    return _git(project_dir, "ls-files", "-z", "--others", "--exclude-standard")
 
 
 def opt_in_files(project_dir: Path, patterns: Sequence[str]) -> list[str]:

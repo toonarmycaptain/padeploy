@@ -143,8 +143,8 @@ By default, `deploy` uploads the files git tracks, except `.github/`, `.pre-comm
 - `EXCLUDE`: never upload files matching these patterns. These add to the defaults above, which
   can't currently be removed.
 - `GROUPS`: named sets of patterns, for `--only` and `--with`. The built-in groups are `code`
-  (Python files and templates) and `assets` (static files, see [Frameworks](#frameworks)); define
-  one with the same name to replace it.
+  (Python files and templates) and `assets` (static files), plus `migrations` with `django` (see
+  [Frameworks](#frameworks)); define one with the same name to replace it.
 
 A group with `default = false` is opt-in, for files you don't want to upload every time, such as a
 database. Its files are uploaded only with `--with NAME` or `--only NAME`, and then all of them
@@ -175,11 +175,16 @@ the `assets` group holds:
 
 - `flask`: leaves out `tests/`; `assets` is `static/`.
 - `django`: leaves out every `tests/` directory and `tests.py`; `assets` is every `static/`
-  directory, so each app's counts.
+  directory, so each app's counts; `migrations` is an opt-in group of every `migrations/*.py` file.
 
-With `django`, `deploy` also warns when it uploads migrations or static files. They need
-`python manage.py migrate` or `python manage.py collectstatic` run on PythonAnywhere, then
-`padeploy reload`.
+With `django`, code that needs a new migration breaks until `migrate` has run, so migrations are
+only uploaded with `--with migrations` (or `--only migrations`), including the first deploy to a
+server. Then run `python manage.py migrate` on PythonAnywhere straight away. With `--changes`,
+`--staged` or `--since`, `deploy` warns when a migration changed, or is new and untracked by git,
+but isn't being uploaded.
+
+`deploy` also warns when it uploads migrations or static files. They need `python manage.py migrate`
+or `python manage.py collectstatic` run on PythonAnywhere, then `padeploy reload`.
 
 ```toml
 [tool.padeploy]

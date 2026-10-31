@@ -33,11 +33,15 @@ class Group:
 
 
 class ServerCommand(NamedTuple):
-    """A server command that uploading files matching ``patterns`` calls for."""
+    """A server command that uploading files matching ``patterns`` calls for.
+
+    ``group`` names the opt-in group that holds those files, if there is one.
+    """
 
     what: str
     command: str
     patterns: tuple[str, ...]
+    group: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,9 +65,18 @@ FRAMEWORKS: Mapping[str, Framework] = {
     ),
     "django": Framework(
         exclude=("**/tests/", "**/tests.py"),
-        groups={"code": _CODE, "assets": Group(("**/static/",))},
+        groups={
+            "code": _CODE,
+            "assets": Group(("**/static/",)),
+            "migrations": Group(("**/migrations/*.py",), default=False),
+        },
         server_commands=(
-            ServerCommand("migrations", "python manage.py migrate", ("**/migrations/[0-9]*.py",)),
+            ServerCommand(
+                "migrations",
+                "python manage.py migrate",
+                ("**/migrations/[0-9]*.py",),
+                group="migrations",
+            ),
             ServerCommand("static files", "python manage.py collectstatic", ("**/static/",)),
         ),
     ),

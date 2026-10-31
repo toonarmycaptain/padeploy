@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from padeploy import cli
 from padeploy.api import PAError
-from padeploy.config import Config, ConfigError, MissingTokenError, parse_config
+from padeploy.config import FRAMEWORKS, Config, ConfigError, MissingTokenError, parse_config
 from padeploy.selection import SelectionError
 from padeploy.traffic import Logs, Network
 
@@ -159,6 +159,9 @@ def patch_deploy(
     upload_files = Mock(side_effect=uploads)
     monkeypatch.setattr(cli, "select_files", select_files)
     monkeypatch.setattr(cli, "include_warnings", Mock(return_value=[]))
+    monkeypatch.setattr(cli, "git_files", Mock(return_value=[]))
+    monkeypatch.setattr(cli, "untracked_files", Mock(return_value=[]))
+    monkeypatch.setattr(cli, "skipped_commands", Mock(return_value=[]))
     monkeypatch.setattr(cli, "find_missing", Mock(return_value=list(missing)))
     monkeypatch.setattr(cli, "upload_files", upload_files)
     return select_files, upload_files, client_class
@@ -374,6 +377,54 @@ def test_deploy_warns_about_the_frameworks_server_commands(monkeypatch: pytest.M
         "Warning: uploaded static files. If they changed, run `python manage.py collectstatic` on"
         " PythonAnywhere, then `padeploy reload`.\n"
     )
+
+
+MIGRATION = ["shop/migrations/0002_add_size.py"]
+UNTRACKED_MIGRATION = ["shop/migrations/0003_add_color.py"]
+CHANGED = [*MIGRATION, *UNTRACKED_MIGRATION]
+SKIPPED_MIGRATIONS = (
+    "Warning: migrations changed but won't be uploaded. Add `--with migrations`, then run"
+    " `python manage.py migrate` on PythonAnywhere immediately.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        pytest.param(
+            ["--changes", "--with", "assets"],
+            (
+                [call(Path("/project"), since=None, changes=True, staged=False)],
+                [call(CONFIG, CHANGED, ("assets",), None)],
+                SKIPPED_MIGRATIONS,
+            ),
+            id="changes",
+        ),
+        pytest.param(
+            ["--since", "v1", "--code"],
+            (
+                [call(Path("/project"), since="v1", changes=False, staged=False)],
+                [call(CONFIG, CHANGED, (), "code")],
+                SKIPPED_MIGRATIONS,
+            ),
+            id="since-code",
+        ),
+        pytest.param([], ([], [], ""), id="full-deploy-has-no-baseline"),
+    ],
+)
+def test_deploy_warns_about_changed_files_it_leaves_out(
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    expected: tuple[list[object], list[object], str],
+) -> None:
+    patch_deploy(monkeypatch)
+    git_files = Mock(return_value=MIGRATION)
+    skipped_commands = Mock(return_value=[FRAMEWORKS["django"].server_commands[0]])
+    monkeypatch.setattr(cli, "git_files", git_files)
+    monkeypatch.setattr(cli, "untracked_files", Mock(return_value=UNTRACKED_MIGRATION))
+    monkeypatch.setattr(cli, "skipped_commands", skipped_commands)
+    result = CliRunner().invoke(cli.main, ["deploy", *args])
+    assert (git_files.mock_calls, skipped_commands.mock_calls, result.stderr) == expected
 
 
 DESCRIBED = "arthur.pythonanywhere.com expires soon."
