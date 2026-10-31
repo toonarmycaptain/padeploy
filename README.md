@@ -39,6 +39,19 @@ uv run padeploy reload
 Reloads the web app. Exits non-zero if the reload fails.
 
 ```bash
+uv run padeploy expiry
+```
+
+Shows when the web app expires and how long is left. A free web app stops at its expiry date unless
+you extend it on the PythonAnywhere Web tab. PythonAnywhere gives only the date, so padeploy takes
+the web app as stopping at 00:00 UTC on it, and shows that time in UTC and in your local time. It
+exits non-zero if the web app expires within a week, or already has. If PythonAnywhere gives no
+expiry date, it says the web app doesn't expire.
+
+`deploy`, `reload` and `traffic` also warn, at the end, when the web app is that close to expiring.
+`deploy --dry-run` does too if `API_TOKEN` is set; it never asks for it.
+
+```bash
 uv run padeploy traffic
 ```
 

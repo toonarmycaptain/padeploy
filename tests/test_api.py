@@ -1,5 +1,6 @@
 import logging
 from contextlib import AbstractContextManager, nullcontext
+from datetime import date
 from http import HTTPStatus
 from typing import Any
 from unittest.mock import Mock, call
@@ -209,6 +210,55 @@ def test_get_file_and_list_dir(
     client, _, _ = make_client(result)
     with expected_exception:
         assert getattr(client, method)("/var/log/x") == expected
+
+
+def test_expiry_sends_get_for_the_web_app() -> None:
+    client, session, _ = make_client(make_response(200, "{}"))
+    client.expiry("example.com")
+    assert session.request.call_args_list == [
+        call("GET", f"{BASE}/webapps/example.com/", timeout=30.0)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_exception", "expected"),
+    [
+        pytest.param(
+            make_response(200, '{"domain_name": "example.com", "expiry": "2026-11-23"}'),
+            nullcontext(),
+            date(2026, 11, 23),
+            id="date",
+        ),
+        pytest.param(make_response(200, '{"expiry": null}'), nullcontext(), None, id="null"),
+        pytest.param(make_response(200, "{}"), nullcontext(), None, id="missing"),
+        pytest.param(
+            make_response(200, '{"expiry": "soon"}'),
+            pytest.raises(PAError, match="^Unexpected expiry for example.com: 'soon'$"),
+            None,
+            id="not-a-date",
+        ),
+        pytest.param(
+            make_response(200, '{"expiry": 5}'),
+            pytest.raises(PAError, match="^Unexpected expiry for example.com: 5$"),
+            None,
+            id="not-a-string",
+        ),
+        pytest.param(
+            make_response(404, "not found"),
+            pytest.raises(PAError, match="^Reading example.com failed \\(404\\): not found$"),
+            None,
+            id="web-app-missing",
+        ),
+    ],
+)
+def test_expiry(
+    result: requests.Response,
+    expected_exception: AbstractContextManager[Any],
+    expected: date | None,
+) -> None:
+    client, _, _ = make_client(result)
+    with expected_exception:
+        assert client.expiry("example.com") == expected
 
 
 @pytest.mark.parametrize(
