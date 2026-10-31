@@ -18,9 +18,19 @@ from .config import (
     load_my_ip,
     load_token,
 )
-from .deploy import UV_FILES, find_missing, upload_files
-from .selection import SelectionError, include_warnings, select_files
+from .deploy import UV_FILES, find_missing, server_commands, upload_files
+from .expiry import describe, is_due
+from .selection import (
+    SelectionError,
+    git_files,
+    include_warnings,
+    select_files,
+    skipped_commands,
+    untracked_files,
+)
 from .traffic import LOG_DIR, detect_public_ips, parse_networks, period, read_logs, report
+
+logger = logging.getLogger(__name__)
 
 
 class _EchoHandler(logging.Handler):
@@ -100,6 +110,7 @@ def deploy(
     config = _load_config(verbose)
     include_patterns = check_patterns("--include", _split(include), config.project_dir)
     exclude_patterns = check_patterns("--exclude", _split(exclude), config.project_dir)
+    only_group = "code" if code else only
     files = select_files(
         config,
         since=since,
@@ -108,10 +119,22 @@ def deploy(
         include=include_patterns,
         exclude=exclude_patterns,
         with_groups=with_groups,
-        only="code" if code else only,
+        only=only_group,
     )
     for warning in include_warnings(config, include_patterns, exclude_patterns):
         click.echo(f"Warning: {warning}", err=True)
+    if since or changes or staged:
+        changed = [
+            *git_files(config.project_dir, since=since, changes=changes, staged=staged),
+            *untracked_files(config.project_dir),
+        ]
+        for server_command in skipped_commands(config, changed, with_groups, only_group):
+            click.echo(
+                f"Warning: {server_command.what} changed but won't be uploaded. Add"
+                f" `--with {server_command.group}`, then run `{server_command.command}` on"
+                " PythonAnywhere immediately.",
+                err=True,
+            )
     missing = find_missing(config, files)
     for path in missing:
         click.echo(f"Skipping {path}: not found")
@@ -122,11 +145,13 @@ def deploy(
         click.echo(f"Would upload {len(files)} file(s) to {config.remote_dir}:")
         for path in files:
             click.echo(f"  {path}")
+        _warn_if_expiring(config)
     else:
         client = PAClient(config.user, _token(config.project_dir), config.host)
         _upload(client, config, files)
         if not no_reload:
             _reload(client, config.domain)
+        _warn_if_expiring(config, client)
 
 
 def _upload(client: PAClient, config: Config, files: list[str]) -> None:
@@ -149,6 +174,12 @@ def _upload(client: PAClient, config: Config, files: list[str]) -> None:
                 " `uv sync` on PythonAnywhere, then `padeploy reload`.",
                 err=True,
             )
+        for server_command in server_commands(config, uploaded):
+            click.echo(
+                f"Warning: uploaded {server_command.what}. If they changed, run"
+                f" `{server_command.command}` on PythonAnywhere, then `padeploy reload`.",
+                err=True,
+            )
     if failed:
         raise click.ClickException(
             f"{failed} of {len(files)} file(s) failed to upload; not reloading."
@@ -160,7 +191,9 @@ def _upload(client: PAClient, config: Config, files: list[str]) -> None:
 def reload(verbose: bool) -> None:
     """Reload the web app."""
     config = _load_config(verbose)
-    _reload(PAClient(config.user, _token(config.project_dir), config.host), config.domain)
+    client = PAClient(config.user, _token(config.project_dir), config.host)
+    _reload(client, config.domain)
+    _warn_if_expiring(config, client)
 
 
 def _reload(client: PAClient, domain: str) -> None:
@@ -169,6 +202,46 @@ def _reload(client: PAClient, domain: str) -> None:
         click.echo(f"Warning: {warning}", err=True)
     else:
         click.echo(f"Reloaded {domain}")
+
+
+@main.command()
+@click.pass_obj
+def expiry(verbose: bool) -> None:
+    """Show when the web app expires. Exits 1 if that's close, or past."""
+    config = _load_config(verbose)
+    client = PAClient(config.user, _token(config.project_dir), config.host)
+    expires = client.expiry(config.domain)
+    now = datetime.now(UTC)
+    if expires is None:
+        click.echo(f"{config.domain} doesn't expire.")
+        return
+    click.echo(describe(config.domain, expires, now))
+    if is_due(expires, now):
+        click.echo(_extend_hint(config))
+        sys.exit(1)
+
+
+def _warn_if_expiring(config: Config, client: PAClient | None = None) -> None:
+    """Warn if the web app is close to expiring. A failed lookup is only logged.
+
+    Without a ``client``, it uses ``API_TOKEN`` if that's set and never prompts for it.
+    """
+    try:
+        client = client or PAClient(config.user, load_token(config.project_dir), config.host)
+        expires = client.expiry(config.domain)
+    except (ConfigError, PAError) as e:
+        logger.debug(f"Couldn't check when {config.domain} expires: {e}")
+        return
+    now = datetime.now(UTC)
+    if expires and is_due(expires, now):
+        click.echo(
+            f"Warning: {describe(config.domain, expires, now)} {_extend_hint(config)}", err=True
+        )
+
+
+def _extend_hint(config: Config) -> str:
+    """Where to extend the web app."""
+    return f"Extend it on the Web tab: https://{config.host}/user/{config.user}/webapps/"
 
 
 def _top(ctx: click.Context, param: click.Parameter, value: str) -> int | None:
@@ -270,6 +343,7 @@ def traffic(
     click.echo(
         report(config.domain, logs, my_networks, start=start, end=end, top=top, detail=detail)
     )
+    _warn_if_expiring(config, client)
 
 
 def _split(values: tuple[str, ...]) -> list[str]:

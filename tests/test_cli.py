@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from ipaddress import ip_network
 from pathlib import Path
 from unittest.mock import Mock, call
@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from padeploy import cli
 from padeploy.api import PAError
-from padeploy.config import Config, ConfigError, MissingTokenError, parse_config
+from padeploy.config import FRAMEWORKS, Config, ConfigError, MissingTokenError, parse_config
 from padeploy.selection import SelectionError
 from padeploy.traffic import Logs, Network
 
@@ -23,11 +23,13 @@ def patch_reload(
     config: Config | Exception = CONFIG,
     token: str | Exception = "secret",
     reload_result: str | Exception | None = None,
+    expires: date | Exception | None = None,
 ) -> tuple[Mock, Mock]:
     """Stub config and token loading, and the client; returns the token loader and client mocks."""
     token_loader = Mock(side_effect=[token])
     client_class = Mock()
     client_class.return_value.reload.side_effect = [reload_result]
+    client_class.return_value.expiry.side_effect = [expires]
     monkeypatch.setattr(cli, "load_config", Mock(side_effect=[config]))
     monkeypatch.setattr(cli, "load_token", token_loader)
     monkeypatch.setattr(cli, "PAClient", client_class)
@@ -42,6 +44,7 @@ def test_reload_passes_config_to_client(monkeypatch: pytest.MonkeyPatch) -> None
         [
             call("arthur", "secret", "www.pythonanywhere.com"),
             call().reload("arthur.pythonanywhere.com"),
+            call().expiry("arthur.pythonanywhere.com"),
         ],
     )
 
@@ -132,6 +135,8 @@ def patch_deploy(
     token: str | Exception = "secret",
     reload_result: str | Exception | None = None,
     missing: Sequence[str] = (),
+    config: Config = CONFIG,
+    expires: date | Exception | None = None,
 ) -> tuple[Mock, Mock, Mock]:
     """
     Stub patch_reload functionality, file selection, include warnings, missing-file check and
@@ -147,11 +152,16 @@ def patch_deploy(
                 raise result
             yield result
 
-    _, client_class = patch_reload(monkeypatch, token=token, reload_result=reload_result)
+    _, client_class = patch_reload(
+        monkeypatch, config, token=token, reload_result=reload_result, expires=expires
+    )
     select_files = Mock(side_effect=[files])
     upload_files = Mock(side_effect=uploads)
     monkeypatch.setattr(cli, "select_files", select_files)
     monkeypatch.setattr(cli, "include_warnings", Mock(return_value=[]))
+    monkeypatch.setattr(cli, "git_files", Mock(return_value=[]))
+    monkeypatch.setattr(cli, "untracked_files", Mock(return_value=[]))
+    monkeypatch.setattr(cli, "skipped_commands", Mock(return_value=[]))
     monkeypatch.setattr(cli, "find_missing", Mock(return_value=list(missing)))
     monkeypatch.setattr(cli, "upload_files", upload_files)
     return select_files, upload_files, client_class
@@ -226,6 +236,7 @@ def test_deploy_uploads_with_client_then_reloads(monkeypatch: pytest.MonkeyPatch
         call.PAClient("arthur", "secret", "www.pythonanywhere.com"),
         call.upload_files(client_class.return_value, CONFIG, ["app.py"]),
         call.PAClient().reload("arthur.pythonanywhere.com"),
+        call.PAClient().expiry("arthur.pythonanywhere.com"),
     ]
 
 
@@ -352,6 +363,157 @@ def test_deploy_output_and_exit_code(
     assert (result.exit_code, result.stdout, result.stderr) == expected
 
 
+def test_deploy_warns_about_the_frameworks_server_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    django = parse_config(
+        {"USER": "arthur", "REMOTE_DIR": "/home/arthur/arthur", "FRAMEWORK": "django"},
+        Path("/project"),
+    )
+    files = ["shop/migrations/0002_add_size.py", "shop/static/shop/site.css"]
+    patch_deploy(monkeypatch, files, [(path, None) for path in files], config=django)
+    result = CliRunner().invoke(cli.main, ["deploy"])
+    assert result.stderr == (
+        "Warning: uploaded migrations. If they changed, run `python manage.py migrate` on"
+        " PythonAnywhere, then `padeploy reload`.\n"
+        "Warning: uploaded static files. If they changed, run `python manage.py collectstatic` on"
+        " PythonAnywhere, then `padeploy reload`.\n"
+    )
+
+
+MIGRATION = ["shop/migrations/0002_add_size.py"]
+UNTRACKED_MIGRATION = ["shop/migrations/0003_add_color.py"]
+CHANGED = [*MIGRATION, *UNTRACKED_MIGRATION]
+SKIPPED_MIGRATIONS = (
+    "Warning: migrations changed but won't be uploaded. Add `--with migrations`, then run"
+    " `python manage.py migrate` on PythonAnywhere immediately.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        pytest.param(
+            ["--changes", "--with", "assets"],
+            (
+                [call(Path("/project"), since=None, changes=True, staged=False)],
+                [call(CONFIG, CHANGED, ("assets",), None)],
+                SKIPPED_MIGRATIONS,
+            ),
+            id="changes",
+        ),
+        pytest.param(
+            ["--since", "v1", "--code"],
+            (
+                [call(Path("/project"), since="v1", changes=False, staged=False)],
+                [call(CONFIG, CHANGED, (), "code")],
+                SKIPPED_MIGRATIONS,
+            ),
+            id="since-code",
+        ),
+        pytest.param([], ([], [], ""), id="full-deploy-has-no-baseline"),
+    ],
+)
+def test_deploy_warns_about_changed_files_it_leaves_out(
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    expected: tuple[list[object], list[object], str],
+) -> None:
+    patch_deploy(monkeypatch)
+    git_files = Mock(return_value=MIGRATION)
+    skipped_commands = Mock(return_value=[FRAMEWORKS["django"].server_commands[0]])
+    monkeypatch.setattr(cli, "git_files", git_files)
+    monkeypatch.setattr(cli, "untracked_files", Mock(return_value=UNTRACKED_MIGRATION))
+    monkeypatch.setattr(cli, "skipped_commands", skipped_commands)
+    result = CliRunner().invoke(cli.main, ["deploy", *args])
+    assert (git_files.mock_calls, skipped_commands.mock_calls, result.stderr) == expected
+
+
+DESCRIBED = "arthur.pythonanywhere.com expires soon."
+EXTEND = "Extend it on the Web tab: https://www.pythonanywhere.com/user/arthur/webapps/"
+
+
+EXPIRY_WARNINGS = [
+    pytest.param([], None, "", id="does-not-expire"),
+    pytest.param([], date.max, "", id="not-close"),
+    pytest.param([], date(2000, 1, 1), f"Warning: {DESCRIBED} {EXTEND}\n", id="due"),
+    pytest.param([], PAError("boom"), "", id="failed-lookup-is-silent"),
+    pytest.param(
+        ["-v"],
+        PAError("boom"),
+        "Couldn't check when arthur.pythonanywhere.com expires: boom\n",
+        id="failed-lookup-verbose",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(["deploy"], id="deploy"),
+        pytest.param(["deploy", "--dry-run"], id="dry-run"),
+        pytest.param(["reload"], id="reload"),
+    ],
+)
+@pytest.mark.parametrize(("args", "expires", "expected_stderr"), EXPIRY_WARNINGS)
+def test_deploy_and_reload_warn_when_the_web_app_expires_soon(
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+    args: list[str],
+    expires: date | Exception | None,
+    expected_stderr: str,
+) -> None:
+    patch_deploy(monkeypatch, expires=expires)
+    monkeypatch.setattr(cli, "describe", Mock(return_value=DESCRIBED))
+    result = CliRunner().invoke(cli.main, [*args, *command])
+    assert (result.exit_code, result.stderr) == (0, expected_stderr)
+
+
+@pytest.mark.parametrize(("args", "expires", "expected_stderr"), EXPIRY_WARNINGS)
+def test_traffic_warns_when_the_web_app_expires_soon(
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    expires: date | Exception | None,
+    expected_stderr: str,
+) -> None:
+    patch_traffic(monkeypatch, my_ip="203.0.113.7", expires=expires)
+    monkeypatch.setattr(cli, "describe", Mock(return_value=DESCRIBED))
+    result = CliRunner().invoke(cli.main, [*args, "traffic"])
+    assert (result.exit_code, result.stderr) == (0, expected_stderr)
+
+
+def test_dry_run_without_an_api_token_still_lists_the_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_deploy(monkeypatch, token=MissingTokenError("padeploy needs API_TOKEN"))
+    result = CliRunner().invoke(cli.main, ["deploy", "--dry-run"])
+    assert (result.exit_code, result.stdout, result.stderr) == (
+        0,
+        "Would upload 1 file(s) to /home/arthur/arthur:\n  app.py\n",
+        "",
+    )
+
+
+@pytest.mark.parametrize(
+    ("expires", "expected"),
+    [
+        pytest.param(
+            None, (0, "arthur.pythonanywhere.com doesn't expire.\n", ""), id="does-not-expire"
+        ),
+        pytest.param(date.max, (0, f"{DESCRIBED}\n", ""), id="not-close"),
+        pytest.param(date(2000, 1, 1), (1, f"{DESCRIBED}\n{EXTEND}\n", ""), id="due-exits-1"),
+        pytest.param(PAError("boom"), (1, "", "Error: boom\n"), id="api-error-exits-1"),
+    ],
+)
+def test_expiry_output_and_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    expires: date | Exception | None,
+    expected: tuple[int, str, str],
+) -> None:
+    patch_reload(monkeypatch, expires=expires)
+    monkeypatch.setattr(cli, "describe", Mock(return_value=DESCRIBED))
+    result = CliRunner().invoke(cli.main, ["expiry"])
+    assert (result.exit_code, result.stdout, result.stderr) == expected
+
+
 @pytest.mark.parametrize(
     ("args", "files", "expected"),
     [
@@ -451,13 +613,14 @@ def patch_traffic(
     my_ip: str = "",
     detected: Sequence[str] = (),
     sources: Sequence[str] = (LOG,),
+    expires: date | Exception | None = None,
 ) -> tuple[Mock, Mock, Mock]:
     """
     Stub patch_reload functionality, MY_IP, IP detection, log fetching and the report.
 
     Returns the client, read_logs and report mocks.
     """
-    _, client_class = patch_reload(monkeypatch)
+    _, client_class = patch_reload(monkeypatch, expires=expires)
     read_logs = Mock(return_value=Logs(list(sources), [], 0))
     report = Mock(return_value="REPORT")
     monkeypatch.setattr(cli, "load_my_ip", Mock(return_value=my_ip))

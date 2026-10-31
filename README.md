@@ -39,6 +39,19 @@ uv run padeploy reload
 Reloads the web app. Exits non-zero if the reload fails.
 
 ```bash
+uv run padeploy expiry
+```
+
+Shows when the web app expires and how long is left. A free web app stops at its expiry date unless
+you extend it on the PythonAnywhere Web tab. PythonAnywhere gives only the date, so padeploy takes
+the web app as stopping at 00:00 UTC on it, and shows that time in UTC and in your local time. It
+exits non-zero if the web app expires within a week, or already has. If PythonAnywhere gives no
+expiry date, it says the web app doesn't expire.
+
+`deploy`, `reload` and `traffic` also warn, at the end, when the web app is that close to expiring.
+`deploy --dry-run` does too if `API_TOKEN` is set; it never asks for it.
+
+```bash
 uv run padeploy traffic
 ```
 
@@ -86,6 +99,7 @@ override one or more values in CI via env vars.
 | `REMOTE_DIR` | Required. The project's directory on PythonAnywhere, as an absolute path. `deploy` uploads files there. |
 | `DOMAIN` | The web app's name on PythonAnywhere. Default: `yourname.pythonanywhere.com`. |
 | `HOST` | Default: `www.pythonanywhere.com`. EU accounts need `eu.pythonanywhere.com`. |
+| `FRAMEWORK` | `flask` (default) or `django`. Sets the defaults for [Choosing files](#choosing-files). See [Frameworks](#frameworks). |
 | `INCLUDE` | Patterns; if set, `deploy` only uploads files matching one. See [Choosing files](#choosing-files). |
 | `EXCLUDE` | Patterns `deploy` never uploads, added to the defaults. |
 | `GROUPS` | Named sets of patterns, for `--only` and `--with`. |
@@ -121,16 +135,16 @@ REMOTE_DIR = "/home/yourname/mysite"
 
 ### Choosing files
 
-By default, `deploy` uploads the files git tracks, except `tests/`, `.github/`,
-`.pre-commit-config.yaml` and `.padeploy_secrets.toml`. To change which files it uploads:
+By default, `deploy` uploads the files git tracks, except `.github/`, `.pre-commit-config.yaml`,
+`.padeploy_secrets.toml` and tests (see [Frameworks](#frameworks)). To change which files it uploads:
 
 - `INCLUDE`: only upload files matching these patterns. `deploy` warns about patterns that match
   no tracked file, and untracked files that would otherwise match (unless explicitly gitignored/excluded/opt-in).
 - `EXCLUDE`: never upload files matching these patterns. These add to the defaults above, which
   can't currently be removed.
 - `GROUPS`: named sets of patterns, for `--only` and `--with`. The built-in groups are `code`
-  (Python files and templates) and `assets` (`static/`); define one with the same name to replace
-  it.
+  (Python files and templates) and `assets` (static files), plus `migrations` with `django` (see
+  [Frameworks](#frameworks)); define one with the same name to replace it.
 
 A group with `default = false` is opt-in, for files you don't want to upload every time, such as a
 database. Its files are uploaded only with `--with NAME` or `--only NAME`, and then all of them
@@ -153,6 +167,29 @@ data = { paths = ["data.db"], default = false }
 
 In environment variables, these are TOML, e.g. `PADEPLOY_EXCLUDE='["scripts/"]'`. A list from the
 environment or `.padeploy_secrets.toml` replaces the pyproject.toml one rather than adding to it.
+
+### Frameworks
+
+`FRAMEWORK` is `flask` (the default) or `django`. It sets which tests `deploy` leaves out and what
+the `assets` group holds:
+
+- `flask`: leaves out `tests/`; `assets` is `static/`.
+- `django`: leaves out every `tests/` directory and `tests.py`; `assets` is every `static/`
+  directory, so each app's counts; `migrations` is an opt-in group of every `migrations/*.py` file.
+
+With `django`, code that needs a new migration breaks until `migrate` has run, so migrations are
+only uploaded with `--with migrations` (or `--only migrations`), including the first deploy to a
+server. Then run `python manage.py migrate` on PythonAnywhere straight away. With `--changes`,
+`--staged` or `--since`, `deploy` warns when a migration changed, or is new and untracked by git,
+but isn't being uploaded.
+
+`deploy` also warns when it uploads migrations or static files. They need `python manage.py migrate`
+or `python manage.py collectstatic` run on PythonAnywhere, then `padeploy reload`.
+
+```toml
+[tool.padeploy]
+FRAMEWORK = "django"
+```
 
 ## Development
 

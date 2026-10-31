@@ -13,6 +13,8 @@ from padeploy.selection import (
     include_warnings,
     matches,
     select_files,
+    skipped_commands,
+    untracked_files,
 )
 
 
@@ -146,6 +148,79 @@ def test_filter_files(
     assert filter_files(FILES, make_config(**config_extra), **kwargs) == expected
 
 
+DJANGO_FILES = [
+    "manage.py",
+    "shop/views.py",
+    "shop/tests.py",
+    "shop/tests/test_views.py",
+    "shop/static/shop/site.css",
+    "shop/templates/shop/index.html",
+    "shop/migrations/0001_initial.py",
+    "shop/migrations/__init__.py",
+]
+DJANGO_MIGRATIONS = ["shop/migrations/0001_initial.py", "shop/migrations/__init__.py"]
+DJANGO_CODE = ["manage.py", "shop/views.py", "shop/templates/shop/index.html"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        pytest.param(
+            {},
+            [f for f in DJANGO_FILES if "tests" not in f and f not in DJANGO_MIGRATIONS],
+            id="default-leaves-out-app-tests-and-migrations",
+        ),
+        pytest.param({"only": "assets"}, ["shop/static/shop/site.css"], id="only-app-static"),
+        pytest.param({"only": "code"}, DJANGO_CODE, id="only-code-leaves-out-migrations"),
+        pytest.param({"only": "migrations"}, DJANGO_MIGRATIONS, id="only-migrations"),
+        pytest.param(
+            {"only": "code", "with_groups": ["migrations"]},
+            [*DJANGO_CODE, *DJANGO_MIGRATIONS],
+            id="code-with-migrations",
+        ),
+    ],
+)
+def test_filter_files_django(kwargs: dict[str, Any], expected: list[str]) -> None:
+    assert filter_files(DJANGO_FILES, make_config(FRAMEWORK="django"), **kwargs) == expected
+
+
+DJANGO = {"FRAMEWORK": "django"}
+NEW_MIGRATION = ["shop/migrations/0002_add_size.py"]
+
+
+@pytest.mark.parametrize(
+    ("config_extra", "changed", "kwargs", "expected"),
+    [
+        pytest.param({}, NEW_MIGRATION, {}, [], id="flask-has-no-server-commands"),
+        pytest.param(DJANGO, ["shop/views.py"], {}, [], id="no-migration-changed"),
+        pytest.param(
+            DJANGO, ["shop/migrations/__init__.py"], {}, [], id="package-needs-no-server-command"
+        ),
+        pytest.param(DJANGO, ["shop/static/a.css"], {}, [], id="static-files-have-no-group"),
+        pytest.param(DJANGO, NEW_MIGRATION, {}, ["migrations"], id="migration-changed"),
+        pytest.param(
+            DJANGO, NEW_MIGRATION, {"only": "code"}, ["migrations"], id="only-another-group"
+        ),
+        pytest.param(
+            DJANGO, NEW_MIGRATION, {"with_groups": ["migrations"]}, [], id="with-the-group"
+        ),
+        pytest.param(DJANGO, NEW_MIGRATION, {"only": "migrations"}, [], id="only-the-group"),
+        pytest.param(
+            {**DJANGO, "GROUPS": {"migrations": {"paths": ["**/migrations/*.py"]}}},
+            NEW_MIGRATION,
+            {},
+            [],
+            id="group-made-default",
+        ),
+    ],
+)
+def test_skipped_commands(
+    config_extra: dict[str, Any], changed: list[str], kwargs: dict[str, Any], expected: list[str]
+) -> None:
+    skipped = skipped_commands(make_config(**config_extra), changed, **kwargs)
+    assert [server_command.what for server_command in skipped] == expected
+
+
 @pytest.mark.parametrize(
     "kwargs", [{"with_groups": ["nope"]}, {"only": "nope"}], ids=["with", "only"]
 )
@@ -192,6 +267,10 @@ def project_dir(tmp_path: Path) -> Path:
 )
 def test_git_files(project_dir: Path, kwargs: dict[str, Any], expected: list[str]) -> None:
     assert git_files(project_dir, **kwargs) == expected
+
+
+def test_untracked_files(project_dir: Path) -> None:
+    assert untracked_files(project_dir) == ["rm_cached.py", "rm_cached_staged.py", "untracked.py"]
 
 
 @pytest.mark.parametrize(

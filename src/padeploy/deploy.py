@@ -1,12 +1,22 @@
 """Upload a project's files to PythonAnywhere."""
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 
 from .api import PAClient, UploadError
-from .config import Config
+from .config import Config, ServerCommand
+from .selection import matches
 
 # The server needs `uv sync` after these change.
 UV_FILES = ("pyproject.toml", "uv.lock")
+
+
+def server_commands(config: Config, uploaded: Sequence[str]) -> list[ServerCommand]:
+    """The framework's server commands that the ``uploaded`` files call for."""
+    return [
+        server_command
+        for server_command in config.server_commands
+        if any(matches(path, server_command.patterns) for path in uploaded)
+    ]
 
 
 def find_missing(config: Config, files: Iterable[str]) -> list[str]:

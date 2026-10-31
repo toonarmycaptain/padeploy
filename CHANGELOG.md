@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
+### Added
+- `padeploy expiry` shows when the web app expires and how long is left, assuming it stops at 00:00 UTC on the expiry date. It exits non-zero if that's within a week, or past. `deploy` (also `--dry-run`), `reload` and `traffic` warn when it's that close.
+- `FRAMEWORK` config key: `flask` (the default, unchanged behaviour) or `django`. Django leaves out every `tests/` directory and `tests.py`, and its `assets` group is every `static/` directory. Its `migrations` group, every `migrations/*.py` file, is opt-in: `--with migrations` uploads it. `deploy` warns when a Django deploy uploads migrations or static files, which need `python manage.py migrate` or `collectstatic` run on PythonAnywhere, and, with `--changes`, `--staged` or `--since`, when a migration changed, or is new and untracked, but isn't being uploaded.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

@@ -1,6 +1,6 @@
 [project]
 name = "padeploy"
-version = "0.3.0"
+version = "0.4.0"
 description = "Deploy and manage PythonAnywhere web apps from your project repo"
 readme = "README.md"
 license = "MIT"
@@ -13,6 +13,12 @@ dependencies = [
     "click>=8.5.0",
     "requests>=2.34.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/toonarmycaptain/padeploy"
+Repository = "https://github.com/toonarmycaptain/padeploy"
+Issues = "https://github.com/toonarmycaptain/padeploy/issues"
+Changelog = "https://github.com/toonarmycaptain/padeploy/blob/dev/CHANGELOG.md"
 
 [project.scripts]
 padeploy = "padeploy.cli:main"

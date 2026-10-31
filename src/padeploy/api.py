@@ -3,6 +3,7 @@
 import logging
 import time
 from collections.abc import Callable
+from datetime import date
 from typing import Any
 from urllib.parse import quote
 
@@ -67,6 +68,19 @@ class PAClient:
         if hint := RELOAD_HINTS.get(response.status_code):
             message += f". {hint}"
         raise PAError(message)
+
+    def expiry(self, domain: str) -> date | None:
+        """The date the web app stops unless extended, or None if it doesn't expire."""
+        response = self._request("GET", f"/webapps/{domain}/")
+        if not response.ok:
+            raise PAError(f"Reading {domain} failed ({response.status_code}): {_detail(response)}")
+        value = response.json().get("expiry")
+        if value is None:
+            return None
+        try:
+            return date.fromisoformat(value)
+        except (TypeError, ValueError) as e:
+            raise PAError(f"Unexpected expiry for {domain}: {value!r}") from e
 
     def upload(self, remote_path: str, content: bytes) -> None:
         """Write ``content`` to the absolute ``remote_path``, creating missing directories."""
