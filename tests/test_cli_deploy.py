@@ -2,12 +2,13 @@ from pathlib import Path
 from unittest.mock import Mock, call
 
 import pytest
-from cli_stubs import APP_OK, CONFIG, patch_deploy
+from cli_stubs import APP_OK, COMMIT, CONFIG, patch_deploy
 from click.testing import CliRunner
 
 from padeploy import cli
-from padeploy.api import PAError
+from padeploy.api import PAError, UploadError
 from padeploy.config import FRAMEWORKS, MissingTokenError, parse_config
+from padeploy.manifest import Manifest, ManifestError
 from padeploy.selection import SelectionError
 
 SELECT_DEFAULTS: dict[str, object] = {
@@ -71,15 +72,27 @@ def test_deploy_rejects_conflicting_options(args: list[str], message: str) -> No
     assert (result.exit_code, result.stderr.splitlines()[-1]) == (2, f"Error: {message}")
 
 
-def test_deploy_uploads_with_client_then_reloads(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deploy_uploads_with_client_then_writes_the_manifest_and_reloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _, upload_files, client_class = patch_deploy(monkeypatch)
+    read_manifest = Mock(return_value=Manifest())
+    write_manifest = Mock()
+    monkeypatch.setattr(cli, "read_manifest", read_manifest)
+    monkeypatch.setattr(cli, "hash_files", Mock(return_value={"app.py": "1"}))
+    monkeypatch.setattr(cli, "write_manifest", write_manifest)
     calls = Mock()
     calls.attach_mock(client_class, "PAClient")
+    calls.attach_mock(read_manifest, "read_manifest")
     calls.attach_mock(upload_files, "upload_files")
+    calls.attach_mock(write_manifest, "write_manifest")
     CliRunner().invoke(cli.main, ["deploy"])
+    client = client_class.return_value
     assert calls.mock_calls == [
         call.PAClient("arthur", "secret", "www.pythonanywhere.com"),
-        call.upload_files(client_class.return_value, CONFIG, ["app.py"]),
+        call.read_manifest(client, CONFIG),
+        call.upload_files(client, CONFIG, ["app.py"]),
+        call.write_manifest(client, CONFIG, Manifest({"app.py": "1"}, COMMIT)),
         call.PAClient().reload("arthur.pythonanywhere.com"),
         call.PAClient().expiry("arthur.pythonanywhere.com"),
     ]
@@ -183,6 +196,159 @@ def test_deploy_output_and_exit_code(
     assert (result.exit_code, result.stdout, result.stderr) == expected
 
 
+FILES = ["app.py", "db.py", "static/a.css"]
+HASHES = {"app.py": "1", "db.py": "2", "static/a.css": "3"}
+# app.py is unchanged, db.py edited and static/a.css new; gone.py isn't selected.
+OLD = Manifest({"app.py": "1", "db.py": "old", "gone.py": "9"}, "abc")
+ALL_DEPLOYED = Manifest({**HASHES, "gone.py": "9"}, COMMIT)
+DB_OK = ("db.py", None)
+CSS_OK = ("static/a.css", None)
+SKIPPING_1 = "Skipping 1 unchanged file(s)\n"
+SKIPPING_3 = "Skipping 3 unchanged file(s)\n"
+UPLOADING_2 = "Uploading 2 file(s) to /home/arthur/arthur\n"
+UPLOADING_ALL = (
+    "Uploading 3 file(s) to /home/arthur/arthur\n  OK app.py\n  OK db.py\n  OK static/a.css\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("args", "manifest", "results", "expected"),
+    [
+        pytest.param(
+            [],
+            OLD,
+            [DB_OK, CSS_OK],
+            (
+                0,
+                SKIPPING_1 + UPLOADING_2 + "  OK db.py\n  OK static/a.css\n" + RELOADED,
+                "",
+                [["db.py", "static/a.css"]],
+                [ALL_DEPLOYED],
+            ),
+            id="skips-unchanged",
+        ),
+        pytest.param(
+            [],
+            Manifest(HASHES),
+            [],
+            (0, SKIPPING_3 + RELOADED, "", [], []),
+            id="all-unchanged-still-reloads",
+        ),
+        pytest.param(
+            ["--no-reload"],
+            Manifest(HASHES),
+            [],
+            (0, SKIPPING_3, "", [], []),
+            id="all-unchanged-no-reload",
+        ),
+        pytest.param(
+            ["--dry-run"],
+            Manifest(HASHES),
+            [],
+            (0, SKIPPING_3 + "No files to upload.\n", "", [], []),
+            id="dry-run-all-unchanged",
+        ),
+        pytest.param(
+            ["--all-files"],
+            OLD,
+            [APP_OK, DB_OK, CSS_OK],
+            (0, UPLOADING_ALL + RELOADED, "", [FILES], [ALL_DEPLOYED]),
+            id="all-files",
+        ),
+        pytest.param(
+            [],
+            OLD,
+            [("db.py", "Upload failed (500): boom"), CSS_OK],
+            (
+                1,
+                SKIPPING_1 + UPLOADING_2 + "  FAIL db.py: Upload failed (500): boom\n"
+                "  OK static/a.css\n",
+                FAILED_1_OF_2,
+                [["db.py", "static/a.css"]],
+                [Manifest({**OLD.files, "static/a.css": "3"}, COMMIT)],
+            ),
+            id="failed-file-keeps-its-old-entry",
+        ),
+        pytest.param(
+            [],
+            OLD,
+            [DB_OK, PAError("POST failed: connection reset")],
+            (
+                1,
+                SKIPPING_1 + UPLOADING_2 + "  OK db.py\n",
+                "Error: POST failed: connection reset\n",
+                [["db.py", "static/a.css"]],
+                [],
+            ),
+            id="api-error-skips-the-write",
+        ),
+        pytest.param(
+            [],
+            ManifestError(".padeploy-manifest.json isn't a JSON object"),
+            [APP_OK, DB_OK, CSS_OK],
+            (
+                0,
+                UPLOADING_ALL + RELOADED,
+                "Warning: .padeploy-manifest.json isn't a JSON object; uploading every selected"
+                " file.\n",
+                [FILES],
+                [Manifest(HASHES, COMMIT)],
+            ),
+            id="unreadable-manifest-uploads-everything",
+        ),
+        pytest.param(
+            ["--dry-run"],
+            OLD,
+            [],
+            (
+                0,
+                SKIPPING_1 + "Would upload 2 file(s) to /home/arthur/arthur:\n  db.py\n"
+                "  static/a.css\n",
+                "",
+                [],
+                [],
+            ),
+            id="dry-run-reads-the-manifest",
+        ),
+    ],
+)
+def test_deploy_uploads_only_changed_files_and_updates_the_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    manifest: Manifest | Exception,
+    results: list[tuple[str, str | None] | Exception],
+    expected: tuple[int, str, str, list[list[str]], list[Manifest]],
+) -> None:
+    _, upload_files, _ = patch_deploy(monkeypatch, FILES, results)
+    write_manifest = Mock()
+    monkeypatch.setattr(cli, "read_manifest", Mock(side_effect=[manifest]))
+    monkeypatch.setattr(cli, "hash_files", Mock(return_value=HASHES))
+    monkeypatch.setattr(cli, "write_manifest", write_manifest)
+    result = CliRunner().invoke(cli.main, ["deploy", *args])
+    assert (
+        result.exit_code,
+        result.stdout,
+        result.stderr,
+        [c.args[2] for c in upload_files.mock_calls],
+        [c.args[2] for c in write_manifest.mock_calls],
+    ) == expected
+
+
+def test_deploy_warns_and_still_reloads_if_the_manifest_upload_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_deploy(monkeypatch)
+    write_manifest = Mock(side_effect=UploadError("Upload failed (500): boom"))
+    monkeypatch.setattr(cli, "write_manifest", write_manifest)
+    result = CliRunner().invoke(cli.main, ["deploy"])
+    assert (result.exit_code, result.stdout, result.stderr) == (
+        0,
+        UPLOADING + RELOADED,
+        "Warning: couldn't update the manifest: Upload failed (500): boom. The next deploy"
+        " uploads these files again.\n",
+    )
+
+
 def test_deploy_warns_about_the_frameworks_server_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     django = parse_config(
         {"USER": "arthur", "REMOTE_DIR": "/home/arthur/arthur", "FRAMEWORK": "django"},
@@ -255,7 +421,8 @@ def test_dry_run_without_an_api_token_still_lists_the_files(
     assert (result.exit_code, result.stdout, result.stderr) == (
         0,
         "Would upload 1 file(s) to /home/arthur/arthur:\n  app.py\n",
-        "",
+        "Warning: without API_TOKEN, a dry run can't read the manifest, so it lists every selected"
+        " file. A deploy skips those unchanged since the last one.\n",
     )
 
 

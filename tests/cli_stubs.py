@@ -8,6 +8,7 @@ import pytest
 
 from padeploy import cli
 from padeploy.config import Config, parse_config
+from padeploy.manifest import Manifest
 from padeploy.traffic import Logs
 
 CONFIG = parse_config({"USER": "arthur", "REMOTE_DIR": "/home/arthur/arthur"}, Path("/project"))
@@ -34,6 +35,7 @@ def patch_reload(
 
 
 APP_OK = ("app.py", None)
+COMMIT = "709e179"
 
 
 def patch_deploy(
@@ -45,9 +47,10 @@ def patch_deploy(
     config: Config = CONFIG,
 ) -> tuple[Mock, Mock, Mock]:
     """
-    Stub patch_reload functionality, file selection, include warnings, missing-file check and
-    uploads.
+    Stub patch_reload functionality, file selection, include warnings, missing-file check,
+    the manifest and uploads.
 
+    The server has no manifest yet, and no file has a hash, so every file counts as changed.
     An exception in ``results`` is raised when the uploads reach it.
     Returns the select_files, upload_files and client mocks.
     """
@@ -67,7 +70,11 @@ def patch_deploy(
     monkeypatch.setattr(cli, "untracked_files", Mock(return_value=[]))
     monkeypatch.setattr(cli, "skipped_commands", Mock(return_value=[]))
     monkeypatch.setattr(cli, "find_missing", Mock(return_value=list(missing)))
+    monkeypatch.setattr(cli, "read_manifest", Mock(return_value=Manifest()))
+    monkeypatch.setattr(cli, "hash_files", Mock(return_value={}))
     monkeypatch.setattr(cli, "upload_files", upload_files)
+    monkeypatch.setattr(cli, "write_manifest", Mock())
+    monkeypatch.setattr(cli, "head_commit", Mock(return_value=COMMIT))
     return select_files, upload_files, client_class
 
 

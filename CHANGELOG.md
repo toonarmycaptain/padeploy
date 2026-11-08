@@ -7,6 +7,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `deploy` skips files unchanged since the last deploy. It keeps each deployed file's sha256 in `.padeploy-manifest.json` in `REMOTE_DIR`. `--all-files` uploads every selected file anyway. `deploy` still reloads when nothing changed, so running it again retries a failed reload. With `API_TOKEN` set, `--dry-run` reads the manifest too, so it lists only the files a deploy would upload. pyproject.toml and uv.lock now upload only when they change, so the `uv sync` warning no longer appears on every full deploy.
+
 ## [0.4.0] - 2026-10-31
 
 ### Added

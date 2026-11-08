@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-from .api import PAClient, PAError
+from .api import PAClient, PAError, UploadError
 from .config import (
     Config,
     ConfigError,
@@ -18,11 +18,20 @@ from .config import (
     load_my_ip,
     load_token,
 )
-from .deploy import UV_FILES, find_missing, server_commands, upload_files
+from .deploy import (
+    UV_FILES,
+    find_missing,
+    read_manifest,
+    server_commands,
+    upload_files,
+    write_manifest,
+)
 from .expiry import describe, is_due
+from .manifest import Manifest, ManifestError, changed_files, hash_files
 from .selection import (
     SelectionError,
     git_files,
+    head_commit,
     include_warnings,
     select_files,
     skipped_commands,
@@ -86,6 +95,7 @@ def _load_config(verbose: bool) -> Config:
 @click.option(
     "--exclude", multiple=True, metavar="PATTERNS", help="Comma-separated; added to EXCLUDE."
 )
+@click.option("--all-files", is_flag=True, help="Upload every selected file, even unchanged ones.")
 @click.option("--dry-run", is_flag=True, help="List the files without uploading them.")
 @click.option("--no-reload", is_flag=True, help="Don't reload the web app after uploading.")
 @click.pass_obj
@@ -99,6 +109,7 @@ def deploy(
     code: bool,
     include: tuple[str, ...],
     exclude: tuple[str, ...],
+    all_files: bool,
     dry_run: bool,
     no_reload: bool,
 ) -> None:
@@ -142,20 +153,78 @@ def deploy(
     if not files:
         click.echo("No files to deploy.")
     elif dry_run:
-        click.echo(f"Would upload {len(files)} file(s) to {config.remote_dir}:")
-        for path in files:
-            click.echo(f"  {path}")
-        _warn_if_expiring(config)
+        _dry_run(config, files, all_files)
     else:
-        client = PAClient(config.user, _token(config.project_dir), config.host)
-        _upload(client, config, files)
-        if not no_reload:
-            _reload(client, config.domain)
+        _deploy(config, files, all_files, no_reload)
+
+
+def _dry_run(config: Config, files: list[str], all_files: bool) -> None:
+    """List the files a deploy would upload.
+
+    It reads the manifest only if ``API_TOKEN`` is set, and never prompts for it.
+    """
+    client = _client_if_token(config)
+    if all_files:
+        to_upload = files
+    elif client:
+        hashes = hash_files(config.project_dir, files)
+        to_upload = _skip_unchanged(files, hashes, _read_manifest(client, config))
+    else:
+        click.echo(
+            "Warning: without API_TOKEN, a dry run can't read the manifest, so it lists every"
+            " selected file. A deploy skips those unchanged since the last one.",
+            err=True,
+        )
+        to_upload = files
+    if to_upload:
+        click.echo(f"Would upload {len(to_upload)} file(s) to {config.remote_dir}:")
+        for path in to_upload:
+            click.echo(f"  {path}")
+    else:
+        click.echo("No files to upload.")
+    if client:
         _warn_if_expiring(config, client)
 
 
-def _upload(client: PAClient, config: Config, files: list[str]) -> None:
-    """Upload ``files``, printing each result. Raise if any failed."""
+def _deploy(config: Config, files: list[str], all_files: bool, no_reload: bool) -> None:
+    """Upload the ``files`` that changed since the last deploy (all of them with ``all_files``),
+    then reload the web app."""
+    client = PAClient(config.user, _token(config.project_dir), config.host)
+    manifest = _read_manifest(client, config)
+    hashes = hash_files(config.project_dir, files)
+    to_upload = files if all_files else _skip_unchanged(files, hashes, manifest)
+    if to_upload:
+        _upload(client, config, to_upload, hashes, manifest)
+    if not no_reload:  # even with nothing uploaded: the last deploy's reload may have failed
+        _reload(client, config.domain)
+    _warn_if_expiring(config, client)
+
+
+def _read_manifest(client: PAClient, config: Config) -> Manifest:
+    """The server's manifest; if it can't be read, a warning and an empty one."""
+    try:
+        return read_manifest(client, config)
+    except ManifestError as e:
+        click.echo(f"Warning: {e}; uploading every selected file.", err=True)
+        return Manifest()
+
+
+def _skip_unchanged(files: list[str], hashes: dict[str, str], manifest: Manifest) -> list[str]:
+    """The ``files`` changed since the ``manifest`` was written. Print how many are skipped."""
+    changed = changed_files(files, hashes, manifest)
+    changed_set = set(changed)
+    if unchanged := [path for path in files if path not in changed_set]:
+        for path in unchanged:
+            logger.debug(f"Unchanged: {path}")
+        click.echo(f"Skipping {len(unchanged)} unchanged file(s)")
+    return changed
+
+
+def _upload(
+    client: PAClient, config: Config, files: list[str], hashes: dict[str, str], manifest: Manifest
+) -> None:
+    """Upload ``files``, printing each result, then add those uploaded to the ``manifest`` on the
+    server, with their ``hashes``. Raise if any failed."""
     click.echo(f"Uploading {len(files)} file(s) to {config.remote_dir}")
     uploaded = []
     failed = 0
@@ -178,6 +247,16 @@ def _upload(client: PAClient, config: Config, files: list[str]) -> None:
             click.echo(
                 f"Warning: uploaded {server_command.what}. If they changed, run"
                 f" `{server_command.command}` on PythonAnywhere, then `padeploy reload`.",
+                err=True,
+            )
+    if uploaded:  # failed files keep their old entries, which still describe the server's copies
+        deployed = {**manifest.files, **{path: hashes[path] for path in uploaded if path in hashes}}
+        try:
+            write_manifest(client, config, Manifest(deployed, head_commit(config.project_dir)))
+        except UploadError as e:
+            click.echo(
+                f"Warning: couldn't update the manifest: {e}. The next deploy uploads these files"
+                " again.",
                 err=True,
             )
     if failed:
@@ -221,15 +300,20 @@ def expiry(verbose: bool) -> None:
         sys.exit(1)
 
 
-def _warn_if_expiring(config: Config, client: PAClient | None = None) -> None:
-    """Warn if the web app is close to expiring. A failed lookup is only logged.
-
-    Without a ``client``, it uses ``API_TOKEN`` if that's set and never prompts for it.
-    """
+def _client_if_token(config: Config) -> PAClient | None:
+    """A client if ``API_TOKEN`` is set, else None. It never prompts, so dry runs can use it."""
     try:
-        client = client or PAClient(config.user, load_token(config.project_dir), config.host)
+        return PAClient(config.user, load_token(config.project_dir), config.host)
+    except ConfigError as e:
+        logger.debug(f"Not using the API: {e}")
+        return None
+
+
+def _warn_if_expiring(config: Config, client: PAClient) -> None:
+    """Warn if the web app is close to expiring. A failed lookup is only logged."""
+    try:
         expires = client.expiry(config.domain)
-    except (ConfigError, PAError) as e:
+    except PAError as e:
         logger.debug(f"Couldn't check when {config.domain} expires: {e}")
         return
     now = datetime.now(UTC)
