@@ -9,7 +9,7 @@ import pytest
 import requests
 
 from padeploy import __version__
-from padeploy.api import MAX_RETRIES, PAClient, PAError, UploadError
+from padeploy.api import MAX_RETRIES, NotFoundError, PAClient, PAError, UploadError
 
 BASE = "https://www.pythonanywhere.com/api/v0/user/bruce"
 
@@ -181,7 +181,7 @@ LISTING = (
         pytest.param(
             "get_file",
             make_response(404, "not found"),
-            pytest.raises(PAError, match="^Reading /var/log/x failed \\(404\\): not found$"),
+            pytest.raises(NotFoundError, match="^Reading /var/log/x failed \\(404\\): not found$"),
             None,
             id="get-file-missing",
         ),

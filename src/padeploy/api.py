@@ -30,6 +30,10 @@ class UploadError(PAError):
     """PythonAnywhere refused one file; other uploads may still work."""
 
 
+class NotFoundError(PAError):
+    """The file asked for doesn't exist on PythonAnywhere."""
+
+
 class PAClient:
     def __init__(
         self,
@@ -94,7 +98,8 @@ class PAClient:
         """The content of the file at the absolute ``path``."""
         response = self._request("GET", f"/files/path{quote(path)}")
         if not response.ok:
-            raise PAError(f"Reading {path} failed ({response.status_code}): {_detail(response)}")
+            error = NotFoundError if response.status_code == 404 else PAError
+            raise error(f"Reading {path} failed ({response.status_code}): {_detail(response)}")
         return response.content
 
     def list_dir(self, path: str) -> list[str]:
