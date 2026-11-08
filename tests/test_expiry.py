@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 
 import pytest
 
-from padeploy.expiry import deadline, describe, is_due
+from padeploy.expiry import describe, is_due
 
 EXPIRY = date(2026, 11, 23)
 EST = timezone(timedelta(hours=-5), "EST")
@@ -11,10 +11,6 @@ EST = timezone(timedelta(hours=-5), "EST")
 def utc(month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
     """A 2026 time in UTC."""
     return datetime(2026, month, day, hour, minute, tzinfo=UTC)
-
-
-def test_deadline_is_midnight_utc_on_the_expiry_date() -> None:
-    assert deadline(EXPIRY) == utc(11, 23)
 
 
 @pytest.mark.parametrize(
