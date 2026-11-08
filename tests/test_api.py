@@ -9,7 +9,14 @@ import pytest
 import requests
 
 from padeploy import __version__
-from padeploy.api import MAX_RETRIES, NotFoundError, PAClient, PAError, UploadError
+from padeploy.api import (
+    MAX_RETRIES,
+    DeleteError,
+    NotFoundError,
+    PAClient,
+    PAError,
+    UploadError,
+)
 
 BASE = "https://www.pythonanywhere.com/api/v0/user/bruce"
 
@@ -153,7 +160,40 @@ def test_upload(result: requests.Response, expected_exception: AbstractContextMa
         client.upload("/home/bruce/site/app.py", b"")
 
 
-@pytest.mark.parametrize("method", ["get_file", "list_dir"])
+def test_delete_sends_delete_with_quoted_path() -> None:
+    client, session, _ = make_client(make_response(204))
+    client.delete("/home/bruce/site/static/a b#1.css")
+    assert session.request.call_args_list == [
+        call("DELETE", f"{BASE}/files/path/home/bruce/site/static/a%20b%231.css", timeout=30.0)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_exception"),
+    [
+        pytest.param(make_response(204), nullcontext(), id="deleted"),
+        pytest.param(
+            make_response(404, "not found"),
+            pytest.raises(NotFoundError, match="^Delete failed \\(404\\): not found$"),
+            id="already-gone",
+        ),
+        pytest.param(
+            make_response(403, "no"),
+            pytest.raises(DeleteError, match="^Delete failed \\(403\\): no$"),
+            id="refused",
+        ),
+        pytest.param(
+            make_response(401), pytest.raises(PAError, match="token rejected"), id="token-rejected"
+        ),
+    ],
+)
+def test_delete(result: requests.Response, expected_exception: AbstractContextManager[Any]) -> None:
+    client, _, _ = make_client(result)
+    with expected_exception:
+        client.delete("/home/bruce/site/app.py")
+
+
+@pytest.mark.parametrize("method", ["get_file", "list_dir", "dir_entries"])
 def test_get_file_and_list_dir_send_get_with_quoted_path(method: str) -> None:
     client, session, _ = make_client(make_response(200, "{}"))
     getattr(client, method)("/var/log/a b#1.log")
@@ -199,13 +239,27 @@ LISTING = (
             None,
             id="list-dir-refused",
         ),
+        pytest.param(
+            "dir_entries",
+            make_response(200, LISTING),
+            nullcontext(),
+            {"x.access.log": "file", "nginx": "directory"},
+            id="dir-entries-types",
+        ),
+        pytest.param(
+            "dir_entries",
+            make_response(404, "not found"),
+            pytest.raises(NotFoundError, match="^Listing /var/log/x failed \\(404\\): not found$"),
+            None,
+            id="dir-entries-missing",
+        ),
     ],
 )
 def test_get_file_and_list_dir(
     method: str,
     result: requests.Response,
     expected_exception: AbstractContextManager[Any],
-    expected: bytes | list[str] | None,
+    expected: bytes | list[str] | dict[str, str] | None,
 ) -> None:
     client, _, _ = make_client(result)
     with expected_exception:

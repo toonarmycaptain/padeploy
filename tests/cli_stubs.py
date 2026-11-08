@@ -36,6 +36,7 @@ def patch_reload(
 
 APP_OK = ("app.py", None)
 COMMIT = "709e179"
+BACKUP = Path("/project/deleted_from_pa/T")
 
 
 def patch_deploy(
@@ -51,6 +52,7 @@ def patch_deploy(
     the manifest and uploads.
 
     The server has no manifest yet, and no file has a hash, so every file counts as changed.
+    Deleted files' copies go to ``BACKUP``.
     An exception in ``results`` is raised when the uploads reach it.
     Returns the select_files, upload_files and client mocks.
     """
@@ -75,6 +77,7 @@ def patch_deploy(
     monkeypatch.setattr(cli, "upload_files", upload_files)
     monkeypatch.setattr(cli, "write_manifest", Mock())
     monkeypatch.setattr(cli, "head_commit", Mock(return_value=COMMIT))
+    monkeypatch.setattr(cli, "backup_folder", Mock(return_value=BACKUP))
     return select_files, upload_files, client_class
 
 

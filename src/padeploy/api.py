@@ -30,6 +30,10 @@ class UploadError(PAError):
     """PythonAnywhere refused one file; other uploads may still work."""
 
 
+class DeleteError(PAError):
+    """PythonAnywhere refused to delete one file; other deletes may still work."""
+
+
 class NotFoundError(PAError):
     """The file asked for doesn't exist on PythonAnywhere."""
 
@@ -94,6 +98,13 @@ class PAClient:
         if not response.ok:
             raise UploadError(f"Upload failed ({response.status_code}): {_detail(response)}")
 
+    def delete(self, remote_path: str) -> None:
+        """Delete the file at the absolute ``remote_path``."""
+        response = self._request("DELETE", f"/files/path{quote(remote_path)}")
+        if not response.ok:
+            error = NotFoundError if response.status_code == 404 else DeleteError
+            raise error(f"Delete failed ({response.status_code}): {_detail(response)}")
+
     def get_file(self, path: str) -> bytes:
         """The content of the file at the absolute ``path``."""
         response = self._request("GET", f"/files/path{quote(path)}")
@@ -104,10 +115,16 @@ class PAClient:
 
     def list_dir(self, path: str) -> list[str]:
         """The names of the files and directories in the directory at the absolute ``path``."""
+        return list(self.dir_entries(path))
+
+    def dir_entries(self, path: str) -> dict[str, str]:
+        """The type (``file`` or ``directory``) of each entry in the directory at the absolute
+        ``path``, by name."""
         response = self._request("GET", f"/files/path{quote(path)}")
         if not response.ok:
-            raise PAError(f"Listing {path} failed ({response.status_code}): {_detail(response)}")
-        return list(response.json())
+            error = NotFoundError if response.status_code == 404 else PAError
+            raise error(f"Listing {path} failed ({response.status_code}): {_detail(response)}")
+        return {name: entry["type"] for name, entry in response.json().items()}
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         """Send a request, retrying on 429 (rate limited) with backoff."""

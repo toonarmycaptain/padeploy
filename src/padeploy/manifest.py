@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 MANIFEST_FILE = ".padeploy-manifest.json"
 
@@ -45,6 +45,12 @@ def parse_manifest(data: bytes) -> Manifest:
         isinstance(path, str) and isinstance(digest, str) for path, digest in files.items()
     ):
         raise ManifestError(f'{MANIFEST_FILE}: "files" isn\'t an object of path: sha256')
+    for path in files:  # --delete deletes these paths, so none may point outside REMOTE_DIR
+        pure = PurePosixPath(path)
+        if not pure.parts or pure.is_absolute() or ".." in pure.parts:
+            raise ManifestError(
+                f"{MANIFEST_FILE}: {path!r} isn't a relative path inside REMOTE_DIR"
+            )
     commit = raw.get("commit")
     if commit is not None and not isinstance(commit, str):
         raise ManifestError(f'{MANIFEST_FILE}: "commit" isn\'t a string or null')

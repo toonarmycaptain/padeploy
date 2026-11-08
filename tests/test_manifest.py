@@ -69,6 +69,24 @@ FILES_SHAPE = '"files" isn\'t an object of path: sha256'
             id="hash-not-string",
         ),
         pytest.param(
+            b'{"files": {"/etc/passwd": "1f"}}',
+            pytest.raises(ManifestError, match="'/etc/passwd' isn't a relative path inside"),
+            None,
+            id="absolute-path",
+        ),
+        pytest.param(
+            b'{"files": {"static/../../x": "1f"}}',
+            pytest.raises(ManifestError, match="'static/../../x' isn't a relative path inside"),
+            None,
+            id="dot-dot-path",
+        ),
+        pytest.param(
+            b'{"files": {"": "1f"}}',
+            pytest.raises(ManifestError, match="'' isn't a relative path inside"),
+            None,
+            id="empty-path",
+        ),
+        pytest.param(
             b'{"commit": 1, "files": {}}',
             pytest.raises(ManifestError, match='"commit" isn\'t a string or null'),
             None,

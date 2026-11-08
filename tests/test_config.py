@@ -44,6 +44,7 @@ DEFAULT_CONFIG = Config(
     groups=FRAMEWORKS["flask"].groups,
     server_commands=(),
     log_level="WARNING",
+    backup_dir=PROJECT_DIR / "deleted_from_pa",
 )
 NO_PADEPLOY_PYPROJECT = "[project]\nname = 'x'\n"
 
@@ -165,6 +166,24 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             nullcontext(),
             replace(DEFAULT_CONFIG, log_level="DEBUG"),
             id="log-level",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "BACKUP_DIR": "backups/pa"},
+            nullcontext(),
+            replace(DEFAULT_CONFIG, backup_dir=PROJECT_DIR / "backups/pa"),
+            id="backup-dir-relative-to-the-project",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "BACKUP_DIR": "/srv/backups"},
+            nullcontext(),
+            replace(DEFAULT_CONFIG, backup_dir=Path("/srv/backups")),
+            id="backup-dir-absolute",
+        ),
+        pytest.param(
+            {**MINIMAL_TOOL_PADEPLOY, "BACKUP_DIR": "~/backups"},
+            nullcontext(),
+            replace(DEFAULT_CONFIG, backup_dir=Path.home() / "backups"),
+            id="backup-dir-in-home",
         ),
         pytest.param(
             {**MINIMAL_TOOL_PADEPLOY, "LOG_LEVEL": "loud"},
@@ -452,7 +471,12 @@ def test_load_config(
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     (tmp_path / start).mkdir(parents=True, exist_ok=True)
-    expected_config = replace(DEFAULT_CONFIG, project_dir=tmp_path, **expected_changes)
+    expected_config = replace(
+        DEFAULT_CONFIG,
+        project_dir=tmp_path,
+        backup_dir=tmp_path / "deleted_from_pa",
+        **expected_changes,
+    )
     with expected_exception:
         assert load_config(tmp_path / start) == expected_config
 
