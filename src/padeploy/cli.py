@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -44,6 +44,7 @@ from .selection import (
     untracked_files,
 )
 from .traffic import LOG_DIR, detect_public_ips, parse_networks, period, read_logs, report
+from .tree import file_tree
 
 logger = logging.getLogger(__name__)
 
@@ -251,8 +252,7 @@ def _dry_run(
         to_upload = files
     if to_upload:
         click.echo(f"Would upload {len(to_upload)} file(s) to {config.remote_dir}:")
-        for path in to_upload:
-            click.echo(f"  {path}")
+        _echo_tree(to_upload)
     else:
         click.echo("No files to upload.")
     if removed and manifest is None:
@@ -263,8 +263,7 @@ def _dry_run(
     found = removed(manifest) if removed and manifest is not None else []
     if to_delete := [*found, *(path for path in present if path not in found)]:
         click.echo(f"Would delete {len(to_delete)} file(s) from {config.remote_dir}:")
-        for path in to_delete:
-            click.echo(f"  {path}")
+        _echo_tree(to_delete)
     if client:
         _warn_if_expiring(config, client)
 
@@ -332,16 +331,39 @@ def _skip_unchanged(files: list[str], hashes: dict[str, str], manifest: Manifest
     return changed
 
 
+def _echo_tree(files: Iterable[str]) -> None:
+    """Print ``files`` as a tree, indented under a heading."""
+    for line in file_tree(files):
+        click.echo(f"{'  ' * (line.depth + 1)}{line.label}")
+
+
+def _echo_results(
+    files: list[str], run: Callable[[list[str]], Iterable[tuple[str, str | None]]]
+) -> Iterator[tuple[str, str | None]]:
+    """Call ``run`` with ``files`` in tree order, and yield its (path, error or None) results.
+
+    As each comes, it prints the tree down to that file, with the result after its name: OK, or
+    FAIL and the error.
+    """
+    lines = file_tree(files)
+    unprinted = iter(lines)
+    for path, error in run([line.path for line in lines if line.path is not None]):
+        for line in unprinted:  # directories before this file, then the file
+            indent = "  " * (line.depth + 1)
+            if line.path == path:
+                click.echo(f"{indent}{line.label}  {f'FAIL: {error}' if error else 'OK'}")
+                break
+            click.echo(f"{indent}{line.label}")
+        yield path, error
+
+
 def _upload(client: PAClient, config: Config, files: list[str]) -> list[str]:
     """Upload ``files``, printing each result. Return those uploaded."""
     click.echo(f"Uploading {len(files)} file(s) to {config.remote_dir}")
     uploaded = []
     try:
-        for path, error in upload_files(client, config, files):
-            if error:
-                click.echo(f"  FAIL {path}: {error}")
-            else:
-                click.echo(f"  OK {path}")
+        for path, error in _echo_results(files, partial(upload_files, client, config)):
+            if not error:
                 uploaded.append(path)
     finally:  # if an upload raises, e.g. a rejected token, earlier ones are on the server anyway
         if uv_files := [path for path in uploaded if path in UV_FILES]:
@@ -368,8 +390,7 @@ def _confirm_delete(config: Config, files: list[str]) -> None:
     click.echo(
         f"Delete {len(files)} file(s) from {config.remote_dir}? Copies go to {config.backup_dir}."
     )
-    for path in files:
-        click.echo(f"  {path}")
+    _echo_tree(files)
     click.confirm("Delete them?", abort=True)
 
 
@@ -378,14 +399,8 @@ def _delete(client: PAClient, config: Config, files: list[str]) -> list[str]:
     deleted."""
     backup = backup_folder(config, datetime.now(UTC))
     click.echo(f"Deleting {len(files)} file(s) from {config.remote_dir}, copying them to {backup}")
-    deleted = []
-    for path, error in delete_files(client, config, files, backup):
-        if error:
-            click.echo(f"  FAIL {path}: {error}")
-        else:
-            click.echo(f"  OK {path}")
-            deleted.append(path)
-    return deleted
+    run = partial(delete_files, client, config, backup=backup)
+    return [path for path, error in _echo_results(files, run) if not error]
 
 
 def _write_manifest(client: PAClient, config: Config, manifest: Manifest) -> None:

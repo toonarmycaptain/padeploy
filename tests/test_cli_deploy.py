@@ -98,7 +98,7 @@ def test_deploy_uploads_with_client_then_writes_the_manifest_and_reloads(
     ]
 
 
-UPLOADING = "Uploading 1 file(s) to /home/arthur/arthur\n  OK app.py\n"
+UPLOADING = "Uploading 1 file(s) to /home/arthur/arthur\n  app.py  OK\n"
 RELOADED = "Reloaded arthur.pythonanywhere.com\n"
 SYNC_PYPROJECT = (
     "Warning: uploaded pyproject.toml. If dependencies changed, run `uv sync` on PythonAnywhere,"
@@ -115,7 +115,11 @@ FAILED_1_OF_2 = "Error: 1 of 2 file(s) failed to upload; not reloading.\n"
             ["--dry-run"],
             ["app.py", "static/a.css"],
             [],
-            (0, "Would upload 2 file(s) to /home/arthur/arthur:\n  app.py\n  static/a.css\n", ""),
+            (
+                0,
+                "Would upload 2 file(s) to /home/arthur/arthur:\n  static/\n    a.css\n  app.py\n",
+                "",
+            ),
             id="dry-run",
         ),
         pytest.param([], ["app.py"], [APP_OK], (0, UPLOADING + RELOADED, ""), id="ok"),
@@ -125,8 +129,8 @@ FAILED_1_OF_2 = "Error: 1 of 2 file(s) failed to upload; not reloading.\n"
             [APP_OK, ("db.py", "Upload failed (500): boom")],
             (
                 1,
-                "Uploading 2 file(s) to /home/arthur/arthur\n  OK app.py\n"
-                "  FAIL db.py: Upload failed (500): boom\n",
+                "Uploading 2 file(s) to /home/arthur/arthur\n  app.py  OK\n"
+                "  db.py  FAIL: Upload failed (500): boom\n",
                 FAILED_1_OF_2,
             ),
             id="failed-upload-exits-1-without-reloading",
@@ -138,7 +142,7 @@ FAILED_1_OF_2 = "Error: 1 of 2 file(s) failed to upload; not reloading.\n"
             [("pyproject.toml", None), ("uv.lock", None)],
             (
                 0,
-                "Uploading 2 file(s) to /home/arthur/arthur\n  OK pyproject.toml\n  OK uv.lock\n"
+                "Uploading 2 file(s) to /home/arthur/arthur\n  pyproject.toml  OK\n  uv.lock  OK\n"
                 + RELOADED,
                 "Warning: uploaded pyproject.toml and uv.lock. If dependencies changed, run"
                 " `uv sync` on PythonAnywhere, then `padeploy reload`.\n",
@@ -147,23 +151,23 @@ FAILED_1_OF_2 = "Error: 1 of 2 file(s) failed to upload; not reloading.\n"
         ),
         pytest.param(
             [],
-            ["pyproject.toml", "app.py"],
-            [("pyproject.toml", None), ("app.py", "Upload failed (500): boom")],
+            ["pyproject.toml", "wsgi.py"],
+            [("pyproject.toml", None), ("wsgi.py", "Upload failed (500): boom")],
             (
                 1,
-                "Uploading 2 file(s) to /home/arthur/arthur\n  OK pyproject.toml\n"
-                "  FAIL app.py: Upload failed (500): boom\n",
+                "Uploading 2 file(s) to /home/arthur/arthur\n  pyproject.toml  OK\n"
+                "  wsgi.py  FAIL: Upload failed (500): boom\n",
                 SYNC_PYPROJECT + FAILED_1_OF_2,
             ),
             id="uv-warning-survives-a-later-failure",
         ),
         pytest.param(
             [],
-            ["pyproject.toml", "app.py"],
+            ["pyproject.toml", "wsgi.py"],
             [("pyproject.toml", None), PAError("POST failed: connection reset")],
             (
                 1,
-                "Uploading 2 file(s) to /home/arthur/arthur\n  OK pyproject.toml\n",
+                "Uploading 2 file(s) to /home/arthur/arthur\n  pyproject.toml  OK\n",
                 SYNC_PYPROJECT + "Error: POST failed: connection reset\n",
             ),
             id="uv-warning-survives-an-api-error",
@@ -196,6 +200,29 @@ def test_deploy_output_and_exit_code(
     assert (result.exit_code, result.stdout, result.stderr) == expected
 
 
+def test_deploy_uploads_in_tree_order_printing_each_result_after_its_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = ["app.py", "core/data/data.py", "web/config/urls.py", "web/views/views.py"]
+    in_tree_order = [files[1], files[2], files[3], files[0]]
+    results: list[tuple[str, str | None]] = [(path, None) for path in in_tree_order]
+    results[1] = (files[2], "Upload failed (500): boom")
+    _, upload_files, _ = patch_deploy(monkeypatch, files, results)
+    result = CliRunner().invoke(cli.main, ["deploy"])
+    assert (result.stdout, [c.args[2] for c in upload_files.mock_calls]) == (
+        "Uploading 4 file(s) to /home/arthur/arthur\n"
+        "  core/data/\n"
+        "    data.py  OK\n"
+        "  web/\n"
+        "    config/\n"
+        "      urls.py  FAIL: Upload failed (500): boom\n"
+        "    views/\n"
+        "      views.py  OK\n"
+        "  app.py  OK\n",
+        [in_tree_order],
+    )
+
+
 FILES = ["app.py", "db.py", "static/a.css"]
 HASHES = {"app.py": "1", "db.py": "2", "static/a.css": "3"}
 # app.py is unchanged, db.py edited and static/a.css new; gone.py isn't selected.
@@ -207,8 +234,12 @@ SKIPPING_1 = "Skipping 1 unchanged file(s)\n"
 SKIPPING_3 = "Skipping 3 unchanged file(s)\n"
 UPLOADING_2 = "Uploading 2 file(s) to /home/arthur/arthur\n"
 UPLOADING_ALL = (
-    "Uploading 3 file(s) to /home/arthur/arthur\n  OK app.py\n  OK db.py\n  OK static/a.css\n"
+    "Uploading 3 file(s) to /home/arthur/arthur\n  static/\n    a.css  OK\n  app.py  OK\n"
+    "  db.py  OK\n"
 )
+# The order deploy uploads the changed files in: the tree's, directories first.
+CHANGED = ["static/a.css", "db.py"]
+CHANGED_OK = "  static/\n    a.css  OK\n  db.py  OK\n"
 
 
 @pytest.mark.parametrize(
@@ -217,14 +248,8 @@ UPLOADING_ALL = (
         pytest.param(
             [],
             OLD,
-            [DB_OK, CSS_OK],
-            (
-                0,
-                SKIPPING_1 + UPLOADING_2 + "  OK db.py\n  OK static/a.css\n" + RELOADED,
-                "",
-                [["db.py", "static/a.css"]],
-                [ALL_DEPLOYED],
-            ),
+            [CSS_OK, DB_OK],
+            (0, SKIPPING_1 + UPLOADING_2 + CHANGED_OK + RELOADED, "", [CHANGED], [ALL_DEPLOYED]),
             id="skips-unchanged",
         ),
         pytest.param(
@@ -251,20 +276,26 @@ UPLOADING_ALL = (
         pytest.param(
             ["--all-files"],
             OLD,
-            [APP_OK, DB_OK, CSS_OK],
-            (0, UPLOADING_ALL + RELOADED, "", [FILES], [ALL_DEPLOYED]),
+            [CSS_OK, APP_OK, DB_OK],
+            (
+                0,
+                UPLOADING_ALL + RELOADED,
+                "",
+                [["static/a.css", "app.py", "db.py"]],
+                [ALL_DEPLOYED],
+            ),
             id="all-files",
         ),
         pytest.param(
             [],
             OLD,
-            [("db.py", "Upload failed (500): boom"), CSS_OK],
+            [CSS_OK, ("db.py", "Upload failed (500): boom")],
             (
                 1,
-                SKIPPING_1 + UPLOADING_2 + "  FAIL db.py: Upload failed (500): boom\n"
-                "  OK static/a.css\n",
+                SKIPPING_1 + UPLOADING_2 + "  static/\n    a.css  OK\n"
+                "  db.py  FAIL: Upload failed (500): boom\n",
                 FAILED_1_OF_2,
-                [["db.py", "static/a.css"]],
+                [CHANGED],
                 [Manifest({**OLD.files, "static/a.css": "3"}, COMMIT)],
             ),
             id="failed-file-keeps-its-old-entry",
@@ -272,12 +303,12 @@ UPLOADING_ALL = (
         pytest.param(
             [],
             OLD,
-            [DB_OK, PAError("POST failed: connection reset")],
+            [CSS_OK, PAError("POST failed: connection reset")],
             (
                 1,
-                SKIPPING_1 + UPLOADING_2 + "  OK db.py\n",
+                SKIPPING_1 + UPLOADING_2 + "  static/\n    a.css  OK\n",
                 "Error: POST failed: connection reset\n",
-                [["db.py", "static/a.css"]],
+                [CHANGED],
                 [],
             ),
             id="api-error-skips-the-write",
@@ -285,13 +316,13 @@ UPLOADING_ALL = (
         pytest.param(
             [],
             ManifestError(".padeploy-manifest.json isn't a JSON object"),
-            [APP_OK, DB_OK, CSS_OK],
+            [CSS_OK, APP_OK, DB_OK],
             (
                 0,
                 UPLOADING_ALL + RELOADED,
                 "Warning: .padeploy-manifest.json isn't a JSON object; uploading every selected"
                 " file.\n",
-                [FILES],
+                [["static/a.css", "app.py", "db.py"]],
                 [Manifest(HASHES, COMMIT)],
             ),
             id="unreadable-manifest-uploads-everything",
@@ -302,8 +333,8 @@ UPLOADING_ALL = (
             [],
             (
                 0,
-                SKIPPING_1 + "Would upload 2 file(s) to /home/arthur/arthur:\n  db.py\n"
-                "  static/a.css\n",
+                SKIPPING_1 + "Would upload 2 file(s) to /home/arthur/arthur:\n  static/\n"
+                "    a.css\n  db.py\n",
                 "",
                 [],
                 [],
@@ -361,16 +392,11 @@ DELETING = "Deleting 1 file(s) from /home/arthur/arthur" + COPYING
             ["--delete", "--yes"],
             FILES,
             OLD,
-            [DB_OK, CSS_OK],
+            [CSS_OK, DB_OK],
             [("gone.py", None)],
             (
                 0,
-                SKIPPING_1
-                + UPLOADING_2
-                + "  OK db.py\n  OK static/a.css\n"
-                + DELETING
-                + "  OK gone.py\n"
-                + RELOADED,
+                SKIPPING_1 + UPLOADING_2 + CHANGED_OK + DELETING + "  gone.py  OK\n" + RELOADED,
                 "",
                 [["gone.py"]],
                 [Manifest(HASHES, COMMIT)],
@@ -385,7 +411,7 @@ DELETING = "Deleting 1 file(s) from /home/arthur/arthur" + COPYING
             [("gone.py", None)],
             (
                 0,
-                DELETING + "  OK gone.py\n" + RELOADED,
+                DELETING + "  gone.py  OK\n" + RELOADED,
                 "",
                 [["gone.py"]],
                 [Manifest(HASHES, COMMIT)],
@@ -396,12 +422,12 @@ DELETING = "Deleting 1 file(s) from /home/arthur/arthur" + COPYING
             ["--delete", "--yes"],
             FILES,
             OLD,
-            [("db.py", "Upload failed (500): boom"), CSS_OK],
+            [CSS_OK, ("db.py", "Upload failed (500): boom")],
             [],
             (
                 1,
-                SKIPPING_1 + UPLOADING_2 + "  FAIL db.py: Upload failed (500): boom\n"
-                "  OK static/a.css\n",
+                SKIPPING_1 + UPLOADING_2 + "  static/\n    a.css  OK\n"
+                "  db.py  FAIL: Upload failed (500): boom\n",
                 "Error: 1 of 2 file(s) failed to upload; not deleting or reloading.\n",
                 [],
                 [Manifest({**OLD.files, "static/a.css": "3"}, COMMIT)],
@@ -412,15 +438,15 @@ DELETING = "Deleting 1 file(s) from /home/arthur/arthur" + COPYING
             ["--delete", "--yes"],
             FILES,
             OLD,
-            [DB_OK, CSS_OK],
+            [CSS_OK, DB_OK],
             [("gone.py", "Delete failed (403): no")],
             (
                 1,
                 SKIPPING_1
                 + UPLOADING_2
-                + "  OK db.py\n  OK static/a.css\n"
+                + CHANGED_OK
                 + DELETING
-                + "  FAIL gone.py: Delete failed (403): no\n"
+                + "  gone.py  FAIL: Delete failed (403): no\n"
                 + RELOADED,
                 "Error: 1 of 1 file(s) failed to delete.\n",
                 [["gone.py"]],
@@ -436,8 +462,8 @@ DELETING = "Deleting 1 file(s) from /home/arthur/arthur" + COPYING
             [],
             (
                 0,
-                SKIPPING_1 + "Would upload 2 file(s) to /home/arthur/arthur:\n  db.py\n"
-                "  static/a.css\nWould delete 1 file(s) from /home/arthur/arthur:\n  gone.py\n",
+                SKIPPING_1 + "Would upload 2 file(s) to /home/arthur/arthur:\n  static/\n"
+                "    a.css\n  db.py\nWould delete 1 file(s) from /home/arthur/arthur:\n  gone.py\n",
                 "",
                 [],
                 [],
@@ -499,7 +525,7 @@ def test_delete_uses_the_selections_patterns_but_not_its_git_mode(
 
 
 MIGRATION_3 = "shop/migrations/0003_x.py"
-UPLOADING_CSS = "Uploading 1 file(s) to /home/arthur/arthur\n  OK static/a.css\n"
+UPLOADING_CSS = "Uploading 1 file(s) to /home/arthur/arthur\n  static/\n    a.css  OK\n"
 
 
 # OLD's app.py is unchanged; a bare --delete finds gone.py (removed_files is stubbed).
@@ -513,7 +539,7 @@ UPLOADING_CSS = "Uploading 1 file(s) to /home/arthur/arthur\n  OK static/a.css\n
             [("db.py", None)],
             (
                 0,
-                SKIPPING_1 + UPLOADING_CSS + DELETING + "  OK db.py\n" + RELOADED,
+                SKIPPING_1 + UPLOADING_CSS + DELETING + "  db.py  OK\n" + RELOADED,
                 "",
                 [["db.py"]],
                 [Manifest({"app.py": "1", "static/a.css": "3", "gone.py": "9"}, COMMIT)],
@@ -523,15 +549,15 @@ UPLOADING_CSS = "Uploading 1 file(s) to /home/arthur/arthur\n  OK static/a.css\n
         pytest.param(
             ["--yes", "--delete", MIGRATION_3],
             {MIGRATION_3: "file"},
-            [DB_OK, CSS_OK],
+            [CSS_OK, DB_OK],
             [(MIGRATION_3, None)],
             (
                 0,
                 SKIPPING_1
                 + UPLOADING_2
-                + "  OK db.py\n  OK static/a.css\n"
+                + CHANGED_OK
                 + DELETING
-                + f"  OK {MIGRATION_3}\n"
+                + "  shop/migrations/\n    0003_x.py  OK\n"
                 + RELOADED,
                 "",
                 [[MIGRATION_3]],
@@ -543,17 +569,17 @@ UPLOADING_CSS = "Uploading 1 file(s) to /home/arthur/arthur\n  OK static/a.css\n
             ["--yes", "--delete", "--delete", "db.py"],
             {"db.py": "file"},
             [CSS_OK],
-            [("gone.py", None), ("db.py", None)],
+            [("db.py", None), ("gone.py", None)],
             (
                 0,
                 SKIPPING_1
                 + UPLOADING_CSS
                 + "Deleting 2 file(s) from /home/arthur/arthur"
                 + COPYING
-                + "  OK gone.py\n  OK db.py\n"
+                + "  db.py  OK\n  gone.py  OK\n"
                 + RELOADED,
                 "",
-                [["gone.py", "db.py"]],
+                [["db.py", "gone.py"]],
                 [Manifest({"app.py": "1", "static/a.css": "3"}, COMMIT)],
             ),
             id="bare-and-named",
@@ -561,11 +587,11 @@ UPLOADING_CSS = "Uploading 1 file(s) to /home/arthur/arthur\n  OK static/a.css\n
         pytest.param(
             ["--delete", "typo.py"],
             {"typo.py": None},
-            [DB_OK, CSS_OK],
+            [CSS_OK, DB_OK],
             [],
             (
                 0,
-                SKIPPING_1 + UPLOADING_2 + "  OK db.py\n  OK static/a.css\n" + RELOADED,
+                SKIPPING_1 + UPLOADING_2 + CHANGED_OK + RELOADED,
                 "Warning: --delete typo.py: not on PythonAnywhere\n",
                 [],
                 [ALL_DEPLOYED],
@@ -594,7 +620,8 @@ UPLOADING_CSS = "Uploading 1 file(s) to /home/arthur/arthur\n  OK static/a.css\n
             [],
             (
                 0,
-                SKIPPING_1 + "Would upload 1 file(s) to /home/arthur/arthur:\n  static/a.css\n"
+                SKIPPING_1
+                + "Would upload 1 file(s) to /home/arthur/arthur:\n  static/\n    a.css\n"
                 "Would delete 1 file(s) from /home/arthur/arthur:\n  db.py\n",
                 "",
                 [],
@@ -649,9 +676,9 @@ PROMPT = (
                 + PROMPT
                 + "y\n"
                 + UPLOADING_2
-                + "  OK db.py\n  OK static/a.css\n"
+                + CHANGED_OK
                 + DELETING
-                + "  OK gone.py\n"
+                + "  gone.py  OK\n"
                 + RELOADED,
                 "",
                 [["gone.py"]],
@@ -683,7 +710,7 @@ def test_deploy_asks_before_deleting(
     answer: str,
     expected: tuple[int, str, str, list[list[str]]],
 ) -> None:
-    _, upload_files, _ = patch_deploy(monkeypatch, FILES, [DB_OK, CSS_OK])
+    _, upload_files, _ = patch_deploy(monkeypatch, FILES, [CSS_OK, DB_OK])
     delete_files = Mock(return_value=iter([("gone.py", None)]))
     monkeypatch.setattr(cli, "read_manifest", Mock(return_value=OLD))
     monkeypatch.setattr(cli, "hash_files", Mock(return_value=HASHES))
@@ -813,7 +840,7 @@ def test_dry_run_without_an_api_token_still_lists_the_files(
             ["app.py", "old.py"],
             (
                 "Skipping old.py: not found\nUploading 1 file(s) to /home/arthur/arthur\n"
-                "  OK app.py\n" + RELOADED,
+                "  app.py  OK\n" + RELOADED,
                 [["app.py"]],
             ),
             id="deploy",
