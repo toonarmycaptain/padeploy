@@ -3,9 +3,16 @@ from unittest.mock import Mock, call
 
 import pytest
 
-from padeploy.api import PAError, UploadError
+from padeploy.api import NotFoundError, PAError, UploadError
 from padeploy.config import Config, parse_config
-from padeploy.deploy import find_missing, server_commands, upload_files
+from padeploy.deploy import (
+    find_missing,
+    read_manifest,
+    server_commands,
+    upload_files,
+    write_manifest,
+)
+from padeploy.manifest import Manifest, dump_manifest
 
 
 def make_project(tmp_path: Path) -> Config:
@@ -80,3 +87,36 @@ def test_upload_files_raises_api_errors_other_than_refused_uploads(tmp_path: Pat
     client.upload.side_effect = PAError("API token rejected (401). Check API_TOKEN.")
     with pytest.raises(PAError, match="token rejected"):
         list(upload_files(client, make_project(tmp_path), ["app.py", "static/style.css"]))
+
+
+CONFIG = parse_config({"USER": "x", "REMOTE_DIR": "/home/x/site"}, Path("/project"))
+MANIFEST_PATH = "/home/x/site/.padeploy-manifest.json"
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        pytest.param(
+            NotFoundError(f"Reading {MANIFEST_PATH} failed (404)"), Manifest(), id="none-yet"
+        ),
+        pytest.param(
+            b'{"commit": "abc", "files": {"app.py": "1f"}}',
+            Manifest({"app.py": "1f"}, "abc"),
+            id="manifest",
+        ),
+    ],
+)
+def test_read_manifest_from_remote_dir(result: bytes | Exception, expected: Manifest) -> None:
+    client = Mock()
+    client.get_file.side_effect = [result]
+    assert (read_manifest(client, CONFIG), client.get_file.mock_calls) == (
+        expected,
+        [call(MANIFEST_PATH)],
+    )
+
+
+def test_write_manifest_uploads_it_to_remote_dir() -> None:
+    client = Mock()
+    manifest = Manifest({"app.py": "1f"}, "abc")
+    write_manifest(client, CONFIG, manifest)
+    assert client.upload.mock_calls == [call(MANIFEST_PATH, dump_manifest(manifest))]

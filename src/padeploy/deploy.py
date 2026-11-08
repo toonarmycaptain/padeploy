@@ -2,8 +2,9 @@
 
 from collections.abc import Iterable, Iterator, Sequence
 
-from .api import PAClient, UploadError
+from .api import NotFoundError, PAClient, UploadError
 from .config import Config, ServerCommand
+from .manifest import MANIFEST_FILE, Manifest, dump_manifest, parse_manifest
 from .selection import matches
 
 # The server needs `uv sync` after these change.
@@ -22,6 +23,19 @@ def server_commands(config: Config, uploaded: Sequence[str]) -> list[ServerComma
 def find_missing(config: Config, files: Iterable[str]) -> list[str]:
     """The ``files`` not on disk, e.g. deleted since ``--since``. Deploys skip them."""
     return [path for path in files if not (config.project_dir / path).is_file()]
+
+
+def read_manifest(client: PAClient, config: Config) -> Manifest:
+    """The manifest in ``REMOTE_DIR``, or an empty one if there isn't one yet."""
+    try:
+        return parse_manifest(client.get_file(f"{config.remote_dir}/{MANIFEST_FILE}"))
+    except NotFoundError:
+        return Manifest()
+
+
+def write_manifest(client: PAClient, config: Config, manifest: Manifest) -> None:
+    """Upload ``manifest`` to ``REMOTE_DIR``, replacing the one there."""
+    client.upload(f"{config.remote_dir}/{MANIFEST_FILE}", dump_manifest(manifest))
 
 
 def upload_files(

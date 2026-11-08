@@ -10,6 +10,7 @@ from padeploy.selection import (
     SelectionError,
     filter_files,
     git_files,
+    head_commit,
     include_warnings,
     matches,
     select_files,
@@ -271,6 +272,17 @@ def test_git_files(project_dir: Path, kwargs: dict[str, Any], expected: list[str
 
 def test_untracked_files(project_dir: Path) -> None:
     assert untracked_files(project_dir) == ["rm_cached.py", "rm_cached_staged.py", "untracked.py"]
+
+
+def test_head_commit_is_heads_sha_or_none_before_the_first_commit(
+    project_dir: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    empty = tmp_path_factory.mktemp("empty")
+    git(empty, "init")
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%H"], cwd=project_dir, capture_output=True, text=True
+    )
+    assert (head_commit(project_dir), head_commit(empty)) == (log.stdout.strip(), None)
 
 
 @pytest.mark.parametrize(
