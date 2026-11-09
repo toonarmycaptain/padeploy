@@ -65,6 +65,11 @@ ONE_OF = "Use only one of --changes, --staged and --since."
         pytest.param(
             ["--code", "--only", "assets"], "Use --code or --only, not both.", id="code-and-only"
         ),
+        pytest.param(
+            ["--verify", "--all-files"],
+            "Use --verify or --all-files, not both.",
+            id="verify-and-all-files",
+        ),
     ],
 )
 def test_deploy_rejects_conflicting_options(args: list[str], message: str) -> None:
@@ -378,6 +383,139 @@ def test_deploy_warns_and_still_reloads_if_the_manifest_upload_fails(
         "Warning: couldn't update the manifest: Upload failed (500): boom. The next deploy"
         " uploads these files again.\n",
     )
+
+
+COMPARING = "Comparing 3 file(s) with their copies in /home/arthur/arthur\n"
+# app.py was edited on PythonAnywhere and db.py deleted there; static/a.css matches, though OLD
+# lacks it.
+SERVER = {"app.py": "x", "static/a.css": "3"}
+CHANGED_NOTE = "  app.py (changed on PythonAnywhere)"
+MISSING_NOTE = "  db.py (missing on PythonAnywhere)"
+
+
+@pytest.mark.parametrize(
+    ("args", "manifest", "server", "results", "expected"),
+    [
+        pytest.param(
+            [],
+            OLD,
+            SERVER,
+            [APP_OK, DB_OK],
+            (
+                0,
+                COMPARING
+                + SKIPPING_1
+                + UPLOADING_2
+                + f"{CHANGED_NOTE}  OK\n{MISSING_NOTE}  OK\n"
+                + RELOADED,
+                "",
+                [["app.py", "db.py"]],
+                [ALL_DEPLOYED],
+            ),
+            id="uploads-files-whose-server-copies-differ",
+        ),
+        pytest.param(
+            [],
+            OLD,
+            SERVER,
+            [("app.py", "Upload failed (500): boom"), DB_OK],
+            (
+                1,
+                COMPARING
+                + SKIPPING_1
+                + UPLOADING_2
+                + f"{CHANGED_NOTE}  FAIL: Upload failed (500): boom\n{MISSING_NOTE}  OK\n",
+                FAILED_1_OF_2,
+                [["app.py", "db.py"]],
+                [
+                    Manifest(
+                        {"gone.py": "9", "app.py": "x", "static/a.css": "3", "db.py": "2"}, COMMIT
+                    )
+                ],
+            ),
+            id="failed-file-gets-its-server-copys-hash",
+        ),
+        pytest.param(
+            [],
+            Manifest(),
+            HASHES,
+            [],
+            (0, COMPARING + SKIPPING_3 + RELOADED, "", [], [Manifest(HASHES, COMMIT)]),
+            id="nothing-differs-still-writes-the-manifest",
+        ),
+        pytest.param(
+            [],
+            ManifestError(".padeploy-manifest.json isn't a JSON object"),
+            HASHES,
+            [],
+            (
+                0,
+                COMPARING + SKIPPING_3 + RELOADED,
+                "Warning: .padeploy-manifest.json isn't a JSON object.\n",
+                [],
+                [Manifest(HASHES, COMMIT)],
+            ),
+            id="unreadable-manifest",
+        ),
+        pytest.param(
+            ["--dry-run"],
+            OLD,
+            SERVER,
+            [],
+            (
+                0,
+                COMPARING
+                + SKIPPING_1
+                + f"Would upload 2 file(s) to /home/arthur/arthur:\n{CHANGED_NOTE}\n"
+                + f"{MISSING_NOTE}\n",
+                "",
+                [],
+                [],
+            ),
+            id="dry-run",
+        ),
+    ],
+)
+def test_deploy_verify_uploads_files_whose_server_copies_differ(
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    manifest: Manifest | Exception,
+    server: dict[str, str],
+    results: list[tuple[str, str | None]],
+    expected: tuple[int, str, str, list[list[str]], list[Manifest]],
+) -> None:
+    _, upload_files, _ = patch_deploy(monkeypatch, FILES, results)
+    write_manifest = Mock()
+    monkeypatch.setattr(cli, "read_manifest", Mock(side_effect=[manifest]))
+    monkeypatch.setattr(cli, "hash_files", Mock(return_value=HASHES))
+    monkeypatch.setattr(cli, "server_hashes", Mock(return_value=server))
+    monkeypatch.setattr(cli, "write_manifest", write_manifest)
+    result = CliRunner().invoke(cli.main, ["deploy", "--verify", *args])
+    assert (
+        result.exit_code,
+        result.stdout,
+        result.stderr,
+        [c.args[2] for c in upload_files.mock_calls],
+        [c.args[2] for c in write_manifest.mock_calls],
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        pytest.param([], [], id="not-without-verify"),
+        pytest.param(["--verify"], [(CONFIG, FILES)], id="verify"),
+        pytest.param(["--verify", "--dry-run"], [(CONFIG, FILES)], id="dry-run"),
+    ],
+)
+def test_verify_compares_every_selected_file(
+    monkeypatch: pytest.MonkeyPatch, args: list[str], expected: list[tuple[object, ...]]
+) -> None:
+    patch_deploy(monkeypatch, FILES, [CSS_OK, APP_OK, DB_OK])
+    server_hashes = Mock(return_value={})
+    monkeypatch.setattr(cli, "server_hashes", server_hashes)
+    CliRunner().invoke(cli.main, ["deploy", *args])
+    assert [c.args[1:] for c in server_hashes.mock_calls] == expected
 
 
 COPYING = ", copying them to /project/deleted_from_pa/T\n"
@@ -817,6 +955,12 @@ NO_MANIFEST = (
             NO_MANIFEST
             + "Warning: without API_TOKEN, a dry run can't list the files --delete would remove.\n",
             id="delete",
+        ),
+        pytest.param(
+            ["--verify"],
+            "Warning: without API_TOKEN, a dry run can't compare the files with the server's"
+            " copies, so it lists every selected file. A deploy skips those that match.\n",
+            id="verify",
         ),
     ],
 )

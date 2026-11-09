@@ -1,6 +1,8 @@
 """Upload a project's files to PythonAnywhere, and delete those removed locally."""
 
+import hashlib
 from collections.abc import Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
@@ -11,6 +13,7 @@ from .selection import filter_files, matches
 
 # The server needs `uv sync` after these change.
 UV_FILES = ("pyproject.toml", "uv.lock")
+DOWNLOADS = 8  # at a time, for --verify
 
 
 def server_commands(config: Config, uploaded: Sequence[str]) -> list[ServerCommand]:
@@ -79,6 +82,22 @@ def read_manifest(client: PAClient, config: Config) -> Manifest:
 def write_manifest(client: PAClient, config: Config, manifest: Manifest) -> None:
     """Upload ``manifest`` to ``REMOTE_DIR``, replacing the one there."""
     client.upload(f"{config.remote_dir}/{MANIFEST_FILE}", dump_manifest(manifest))
+
+
+def server_hashes(client: PAClient, config: Config, files: Sequence[str]) -> dict[str, str]:
+    """The sha256 hex digest of each of ``files``' copies under ``REMOTE_DIR``, leaving out any
+    that aren't there. Downloads ``DOWNLOADS`` at a time."""
+
+    def server_hash(path: str) -> str | None:
+        """The sha256 hex digest of ``path``'s server copy, or None if it isn't there."""
+        try:
+            return hashlib.sha256(client.get_file(f"{config.remote_dir}/{path}")).hexdigest()
+        except NotFoundError:
+            return None
+
+    with ThreadPoolExecutor(DOWNLOADS) as pool:
+        digests = zip(files, pool.map(server_hash, files), strict=True)
+        return {path: digest for path, digest in digests if digest is not None}
 
 
 def upload_files(

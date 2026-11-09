@@ -1,4 +1,5 @@
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, call
@@ -13,6 +14,7 @@ from padeploy.deploy import (
     read_manifest,
     removed_files,
     server_commands,
+    server_hashes,
     server_types,
     upload_files,
     write_manifest,
@@ -125,6 +127,29 @@ def test_write_manifest_uploads_it_to_remote_dir() -> None:
     manifest = Manifest({"app.py": "1f"}, "abc")
     write_manifest(client, CONFIG, manifest)
     assert client.upload.mock_calls == [call(MANIFEST_PATH, dump_manifest(manifest))]
+
+
+def test_server_hashes_hashes_each_server_copy_leaving_out_missing_ones() -> None:
+    copies = {"/home/x/site/app.py": b"app", "/home/x/site/static/a.css": b"css"}
+
+    def get_file(path: str) -> bytes:
+        if path not in copies:
+            raise NotFoundError(f"Reading {path} failed (404): not found")
+        return copies[path]
+
+    client = Mock()
+    client.get_file.side_effect = get_file
+    assert server_hashes(client, CONFIG, ["app.py", "gone.py", "static/a.css"]) == {
+        "app.py": sha256(b"app").hexdigest(),
+        "static/a.css": sha256(b"css").hexdigest(),
+    }
+
+
+def test_server_hashes_raises_api_errors_other_than_missing_files() -> None:
+    client = Mock()
+    client.get_file.side_effect = PAError("Reading /home/x/site/app.py failed (500): boom")
+    with pytest.raises(PAError, match="500"):
+        server_hashes(client, CONFIG, ["app.py"])
 
 
 @pytest.mark.parametrize(

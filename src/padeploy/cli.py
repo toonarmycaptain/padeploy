@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -28,6 +28,7 @@ from .deploy import (
     read_manifest,
     removed_files,
     server_commands,
+    server_hashes,
     server_types,
     upload_files,
     write_manifest,
@@ -44,7 +45,7 @@ from .selection import (
     untracked_files,
 )
 from .traffic import LOG_DIR, detect_public_ips, parse_networks, period, read_logs, report
-from .tree import file_tree
+from .tree import TreeLine, file_tree
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,11 @@ def _load_config(verbose: bool) -> Config:
 )
 @click.option("--all-files", is_flag=True, help="Upload every selected file, even unchanged ones.")
 @click.option(
+    "--verify",
+    is_flag=True,
+    help="Compare the selected files with the server's copies, and upload those that differ.",
+)
+@click.option(
     "--delete",
     multiple=True,
     is_flag=False,
@@ -127,6 +133,7 @@ def deploy(
     include: tuple[str, ...],
     exclude: tuple[str, ...],
     all_files: bool,
+    verify: bool,
     delete: tuple[str, ...],
     yes: bool,
     dry_run: bool,
@@ -137,6 +144,8 @@ def deploy(
         raise click.UsageError("Use only one of --changes, --staged and --since.")
     if code and only:
         raise click.UsageError("Use --code or --only, not both.")
+    if verify and all_files:
+        raise click.UsageError("Use --verify or --all-files, not both.")
     config = _load_config(verbose)
     include_patterns = check_patterns("--include", _split(include), config.project_dir)
     exclude_patterns = check_patterns("--exclude", _split(exclude), config.project_dir)
@@ -187,9 +196,9 @@ def deploy(
     if not files and not removed and not named:
         click.echo("No files to deploy.")
     elif dry_run:
-        _dry_run(config, files, all_files, removed, named)
+        _dry_run(config, files, all_files, verify, removed, named)
     else:
-        _deploy(config, files, all_files, no_reload, removed, named, yes)
+        _deploy(config, files, all_files, verify, no_reload, removed, named, yes)
 
 
 def _delete_paths(values: tuple[str, ...], project_dir: Path) -> tuple[str, ...]:
@@ -227,22 +236,36 @@ def _dry_run(
     config: Config,
     files: list[str],
     all_files: bool,
+    verify: bool,
     removed: Callable[[Manifest], list[str]] | None,
     named: Sequence[str],
 ) -> None:
     """List the files a deploy would upload, and those it would delete: the ``named`` ones, and
     those ``removed`` finds.
 
-    It reads the manifest, and checks the ``named`` files are on the server, only if
-    ``API_TOKEN`` is set, and never prompts for it.
+    It reads the manifest, compares the server's copies for ``verify``, and checks the ``named``
+    files are on the server, only if ``API_TOKEN`` is set, and never prompts for it.
     """
     client = _client_if_token(config)
-    manifest = _read_manifest(client, config) if client and (removed or not all_files) else None
+    manifest = (
+        _read_manifest(client, config, verify) if client and (removed or not all_files) else None
+    )
     present = _on_server(client, config, named) if client and named else list(named)
+    notes: dict[str, str] = {}
     if all_files:
         to_upload = files
-    elif manifest is not None:
-        to_upload = _skip_unchanged(files, hash_files(config.project_dir, files), manifest)
+    elif client and manifest is not None:
+        baseline, notes = (
+            _verify(client, config, files, manifest) if verify and files else (manifest, {})
+        )
+        to_upload = _skip_unchanged(files, hash_files(config.project_dir, files), baseline)
+    elif verify:
+        click.echo(
+            "Warning: without API_TOKEN, a dry run can't compare the files with the server's"
+            " copies, so it lists every selected file. A deploy skips those that match.",
+            err=True,
+        )
+        to_upload = files
     else:
         click.echo(
             "Warning: without API_TOKEN, a dry run can't read the manifest, so it lists every"
@@ -252,7 +275,7 @@ def _dry_run(
         to_upload = files
     if to_upload:
         click.echo(f"Would upload {len(to_upload)} file(s) to {config.remote_dir}:")
-        _echo_tree(to_upload)
+        _echo_tree(to_upload, notes)
     else:
         click.echo("No files to upload.")
     if removed and manifest is None:
@@ -272,28 +295,33 @@ def _deploy(
     config: Config,
     files: list[str],
     all_files: bool,
+    verify: bool,
     no_reload: bool,
     removed: Callable[[Manifest], list[str]] | None,
     named: Sequence[str],
     yes: bool,
 ) -> None:
-    """Upload the ``files`` that changed since the last deploy (all of them with ``all_files``),
-    delete the ``named`` files and those ``removed`` finds (asking first, unless ``yes``), then
-    reload the web app."""
+    """Upload the ``files`` that changed since the last deploy (all of them with ``all_files``,
+    those whose server copies differ with ``verify``), delete the ``named`` files and those
+    ``removed`` finds (asking first, unless ``yes``), then reload the web app."""
     client = PAClient(config.user, _token(config.project_dir), config.host)
-    manifest = _read_manifest(client, config)
+    manifest = _read_manifest(client, config, verify)
     present = _on_server(client, config, named) if named else []  # checked before changing anything
     hashes = hash_files(config.project_dir, files)
-    to_upload = files if all_files else _skip_unchanged(files, hashes, manifest)
+    baseline, notes = (
+        _verify(client, config, files, manifest) if verify and files else (manifest, {})
+    )
+    to_upload = files if all_files else _skip_unchanged(files, hashes, baseline)
     found = removed(manifest) if removed else []
     to_delete = [*found, *(path for path in present if path not in found)]
     if to_delete and not yes:
         _confirm_delete(config, to_delete)
-    uploaded = _upload(client, config, to_upload) if to_upload else []
+    uploaded = _upload(client, config, to_upload, notes) if to_upload else []
     failed = len(to_upload) - len(uploaded)
     deleted = set(_delete(client, config, to_delete)) if to_delete and not failed else set()
-    if uploaded or deleted:  # failed files keep their old entries, which still describe the server
-        deployed = {**manifest.files, **{path: hashes[path] for path in uploaded if path in hashes}}
+    # Failed files keep their old entries, which still describe the server.
+    if uploaded or deleted or baseline != manifest:
+        deployed = {**baseline.files, **{path: hashes[path] for path in uploaded if path in hashes}}
         kept = {path: digest for path, digest in deployed.items() if path not in deleted}
         _write_manifest(client, config, Manifest(kept, head_commit(config.project_dir)))
     if failed:
@@ -311,13 +339,32 @@ def _deploy(
         )
 
 
-def _read_manifest(client: PAClient, config: Config) -> Manifest:
+def _read_manifest(client: PAClient, config: Config, verify: bool = False) -> Manifest:
     """The server's manifest; if it can't be read, a warning and an empty one."""
     try:
         return read_manifest(client, config)
     except ManifestError as e:
-        click.echo(f"Warning: {e}; uploading every selected file.", err=True)
+        # With --verify, the server's copies decide what uploads.
+        then = "" if verify else "; uploading every selected file"
+        click.echo(f"Warning: {e}{then}.", err=True)
         return Manifest()
+
+
+def _verify(
+    client: PAClient, config: Config, files: list[str], manifest: Manifest
+) -> tuple[Manifest, dict[str, str]]:
+    """Compare ``files`` with their server copies. Return the ``manifest`` with the copies' real
+    hashes for those files, and a note for each copy changed or missing since it was written."""
+    click.echo(f"Comparing {len(files)} file(s) with their copies in {config.remote_dir}")
+    found = server_hashes(client, config, files)
+    selected = set(files)
+    others = {path: digest for path, digest in manifest.files.items() if path not in selected}
+    notes = {
+        path: "changed on PythonAnywhere" if path in found else "missing on PythonAnywhere"
+        for path in files
+        if path in manifest.files and found.get(path) != manifest.files[path]
+    }
+    return Manifest({**others, **found}, manifest.commit), notes
 
 
 def _skip_unchanged(files: list[str], hashes: dict[str, str], manifest: Manifest) -> list[str]:
@@ -331,19 +378,27 @@ def _skip_unchanged(files: list[str], hashes: dict[str, str], manifest: Manifest
     return changed
 
 
-def _echo_tree(files: Iterable[str]) -> None:
-    """Print ``files`` as a tree, indented under a heading."""
+def _label(line: TreeLine, notes: Mapping[str, str] | None) -> str:
+    """The line's label, followed by its file's note, if it has one."""
+    note = notes.get(line.path) if notes and line.path else None
+    return f"{line.label} ({note})" if note else line.label
+
+
+def _echo_tree(files: Iterable[str], notes: Mapping[str, str] | None = None) -> None:
+    """Print ``files`` as a tree, indented under a heading, with any ``notes`` on them."""
     for line in file_tree(files):
-        click.echo(f"{'  ' * (line.depth + 1)}{line.label}")
+        click.echo(f"{'  ' * (line.depth + 1)}{_label(line, notes)}")
 
 
 def _echo_results(
-    files: list[str], run: Callable[[list[str]], Iterable[tuple[str, str | None]]]
+    files: list[str],
+    run: Callable[[list[str]], Iterable[tuple[str, str | None]]],
+    notes: Mapping[str, str] | None = None,
 ) -> Iterator[tuple[str, str | None]]:
     """Call ``run`` with ``files`` in tree order, and yield its (path, error or None) results.
 
-    As each comes, it prints the tree down to that file, with the result after its name: OK, or
-    FAIL and the error.
+    As each comes, it prints the tree down to that file, with any of the ``notes`` on it, and the
+    result after its name: OK, or FAIL and the error.
     """
     lines = file_tree(files)
     unprinted = iter(lines)
@@ -351,18 +406,21 @@ def _echo_results(
         for line in unprinted:  # directories before this file, then the file
             indent = "  " * (line.depth + 1)
             if line.path == path:
-                click.echo(f"{indent}{line.label}  {f'FAIL: {error}' if error else 'OK'}")
+                result = f"FAIL: {error}" if error else "OK"
+                click.echo(f"{indent}{_label(line, notes)}  {result}")
                 break
             click.echo(f"{indent}{line.label}")
         yield path, error
 
 
-def _upload(client: PAClient, config: Config, files: list[str]) -> list[str]:
-    """Upload ``files``, printing each result. Return those uploaded."""
+def _upload(
+    client: PAClient, config: Config, files: list[str], notes: Mapping[str, str]
+) -> list[str]:
+    """Upload ``files``, printing each result and any of the ``notes``. Return those uploaded."""
     click.echo(f"Uploading {len(files)} file(s) to {config.remote_dir}")
     uploaded = []
     try:
-        for path, error in _echo_results(files, partial(upload_files, client, config)):
+        for path, error in _echo_results(files, partial(upload_files, client, config), notes):
             if not error:
                 uploaded.append(path)
     finally:  # if an upload raises, e.g. a rejected token, earlier ones are on the server anyway
