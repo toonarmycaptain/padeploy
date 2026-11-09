@@ -10,6 +10,7 @@ from typing import Any, NamedTuple
 
 DEFAULT_HOST = "www.pythonanywhere.com"
 DEFAULT_LOG_LEVEL = "WARNING"
+DEFAULT_BACKUP_DIR = "deleted_from_pa"  # where deploy --delete keeps copies of deleted files
 TOKEN_KEY = "API_TOKEN"
 MY_IP_KEY = "MY_IP"
 ENV_PREFIX = "PADEPLOY_"
@@ -85,7 +86,7 @@ FRAMEWORKS: Mapping[str, Framework] = {
 # Each config key has one name, used as-is in [tool.padeploy] and .padeploy_secrets.toml, and with
 # the PADEPLOY_ prefix in the environment, where lists and tables are TOML values,
 # e.g. PADEPLOY_EXCLUDE='["scripts/"]'.
-_STR_KEYS = ("USER", "REMOTE_DIR", "DOMAIN", "HOST", "LOG_LEVEL", "FRAMEWORK")
+_STR_KEYS = ("USER", "REMOTE_DIR", "DOMAIN", "HOST", "LOG_LEVEL", "FRAMEWORK", "BACKUP_DIR")
 _LIST_KEYS = ("INCLUDE", "EXCLUDE")
 _KEYS = (*_STR_KEYS, *_LIST_KEYS, "GROUPS")
 
@@ -102,6 +103,7 @@ class Config:
     groups: Mapping[str, Group]
     server_commands: tuple[ServerCommand, ...]
     log_level: str
+    backup_dir: Path
 
 
 def find_pyproject(start: Path) -> Path:
@@ -176,6 +178,8 @@ def parse_config(section: Mapping[str, Any], project_dir: Path) -> Config:
         groups={**framework.groups, **_groups(section.get("GROUPS", {}), project_dir)},
         server_commands=framework.server_commands,
         log_level=log_level,
+        # Relative to the project; an absolute path (or ~) replaces it.
+        backup_dir=project_dir / Path(section.get("BACKUP_DIR") or DEFAULT_BACKUP_DIR).expanduser(),
     )
 
 

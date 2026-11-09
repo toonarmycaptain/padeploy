@@ -175,6 +175,13 @@ def git_files(
     return _git(project_dir, "ls-files", "-z")
 
 
+def head_commit(project_dir: Path) -> str | None:
+    """The commit checked out in ``project_dir``'s repo, or None if it has no commits yet."""
+    # --verify --quiet exits 1, printing nothing, when HEAD doesn't resolve.
+    output = _git(project_dir, "rev-parse", "--verify", "--quiet", "HEAD", ok=(0, 1))
+    return output[0].strip() if output else None
+
+
 def untracked_files(project_dir: Path) -> list[str]:
     """Files under ``project_dir`` that git neither tracks nor ignores, relative to it."""
     return _git(project_dir, "ls-files", "-z", "--others", "--exclude-standard")
