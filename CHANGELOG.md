@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-06
+
 ### Added
 - `deploy` skips files unchanged since the last deploy. It keeps each deployed file's sha256 in `.padeploy-manifest.json` in `REMOTE_DIR`. `--all-files` uploads every selected file anyway. `deploy` still reloads when nothing changed, so running it again retries a failed reload. With `API_TOKEN` set, `--dry-run` reads the manifest too, so it lists only the files a deploy would upload. pyproject.toml and uv.lock now upload only when they change, so the `uv sync` warning no longer appears on every full deploy.
 - `deploy --verify` compares the selected files with their copies on PythonAnywhere and uploads those that differ, whatever the manifest says, e.g. after editing files there. Files changed or missing on PythonAnywhere since the last deploy are marked in the list. It records the server copies' hashes in the manifest, so on a site deployed before 0.5.0 it uploads only the files that differ. With `API_TOKEN` set, `--dry-run --verify` lists them too. It can't be combined with `--all-files`.
