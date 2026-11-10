@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-09
+
+### Changed
+- `deploy` uploads files in parallel, up to 8 at a time, so small files upload alongside a large one instead of waiting for it. PythonAnywhere allows 40 uploads a minute; past that, `deploy` waits as before, with one warning per wait. Ctrl-C stops uploads, and `--verify`'s downloads, straight away, even mid-wait.
+- In a terminal, `deploy` prints the file tree first with each file `pending`, then marks each `OK` or `FAIL` as it finishes, for uploads and deletes; the errors follow the tree. When output isn't a terminal, e.g. in CI, or the tree is taller than the screen, it prints each result in tree order, as before.
+
 ## [0.5.0] - 2026-11-06
 
 ### Added

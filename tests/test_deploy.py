@@ -1,3 +1,7 @@
+import signal
+import subprocess
+import sys
+import threading
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -9,6 +13,8 @@ import pytest
 from padeploy.api import DeleteError, NotFoundError, PAError, UploadError
 from padeploy.config import Config, parse_config
 from padeploy.deploy import (
+    THREADS,
+    _map_in_threads,
     delete_files,
     find_missing,
     read_manifest,
@@ -75,17 +81,21 @@ def test_server_commands(framework: str, uploaded: list[str], expected: list[str
 
 
 def test_upload_files_reports_each_file(tmp_path: Path) -> None:
+    def upload(path: str, content: bytes) -> None:
+        if path.endswith(".css"):
+            raise UploadError("Upload failed (500): boom")
+
     client = Mock()
-    client.upload.side_effect = [None, UploadError("Upload failed (500): boom")]
+    client.upload.side_effect = upload
     files = ["app.py", "static", "static/style.css"]
-    results = list(upload_files(client, make_project(tmp_path), files))
-    assert (results, client.upload.mock_calls) == (
+    results = sorted(upload_files(client, make_project(tmp_path), files))
+    assert (results, sorted(c.args for c in client.upload.mock_calls)) == (
         [
             ("app.py", None),
             ("static", "Can't read it: Is a directory"),
             ("static/style.css", "Upload failed (500): boom"),
         ],
-        [call("/home/x/site/app.py", b"app"), call("/home/x/site/static/style.css", b"css")],
+        [("/home/x/site/app.py", b"app"), ("/home/x/site/static/style.css", b"css")],
     )
 
 
@@ -94,6 +104,89 @@ def test_upload_files_raises_api_errors_other_than_refused_uploads(tmp_path: Pat
     client.upload.side_effect = PAError("API token rejected (401). Check API_TOKEN.")
     with pytest.raises(PAError, match="token rejected"):
         list(upload_files(client, make_project(tmp_path), ["app.py", "static/style.css"]))
+
+
+def test_map_in_threads_runs_threads_calls_at_a_time_yielding_each_as_it_finishes() -> None:
+    batch = threading.Barrier(THREADS, timeout=5)  # breaks unless THREADS calls run at once
+    rest_of_batch_yielded = threading.Event()
+    threads = set()
+
+    def call(n: int) -> int:
+        threads.add(threading.current_thread().name)
+        batch.wait()
+        if n == 0:  # started first, finishes after the rest of its batch
+            assert rest_of_batch_yielded.wait(5)
+        return n * 10
+
+    items = range(2 * THREADS)
+    results = []
+    for result in _map_in_threads(call, items):
+        results.append(result)
+        if len(results) == THREADS - 1:
+            rest_of_batch_yielded.set()
+    assert (sorted(results), results.index((0, 0)), len(threads)) == (
+        [(n, n * 10) for n in items],
+        THREADS - 1,
+        THREADS,
+    )
+
+
+def test_map_in_threads_starts_no_new_calls_once_one_raises() -> None:
+    release = threading.Event()
+    started = []
+
+    def call(n: int) -> int:
+        started.append(n)
+        if n == 0:
+            raise ValueError("boom")
+        release.wait(5)
+        return n
+
+    with pytest.raises(ValueError, match="boom"):
+        list(_map_in_threads(call, range(100)))
+    release.set()
+    for thread in threading.enumerate():
+        if thread.name.startswith("padeploy-"):
+            thread.join(5)
+    # The calls in flight when it raised, and one more on the thread that raised.
+    assert len(started) <= THREADS + 1
+
+
+RATE_LIMITED_UPLOADS = """
+import sys
+from pathlib import Path
+from unittest.mock import Mock
+
+from padeploy.api import PAClient
+from padeploy.config import parse_config
+from padeploy.deploy import upload_files
+
+def request(*_, **__):
+    print("rate limited", flush=True)
+    return Mock(status_code=429, headers={"Retry-After": "60"})
+
+client = PAClient("x", "token", session=Mock(headers={}, request=request))
+config = parse_config({"USER": "x", "REMOTE_DIR": "/home/x/site"}, Path(sys.argv[1]))
+list(upload_files(client, config, ["app.py"]))
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sends SIGINT")
+def test_ctrl_c_during_a_rate_limit_wait_exits_without_waiting(tmp_path: Path) -> None:
+    make_project(tmp_path)
+    child = subprocess.Popen(
+        [sys.executable, "-c", RATE_LIMITED_UPLOADS, str(tmp_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline() == "rate limited\n"
+        child.send_signal(signal.SIGINT)
+        assert child.wait(timeout=5) == -signal.SIGINT
+    finally:
+        child.kill()
 
 
 CONFIG = parse_config({"USER": "x", "REMOTE_DIR": "/home/x/site"}, Path("/project"))

@@ -18,16 +18,20 @@ jobs:
   test:
     runs-on: ubuntu-latest
     # Pre-release Python: failures show on the job but don't fail the run.
-    continue-on-error: ${{ matrix.python-version == '3.16' }}
+    continue-on-error: ${{ startsWith(matrix.python-version, '3.16') }}
     strategy:
       matrix:
-        python-version: ["3.13", "3.14", "3.15", "3.16"]
+        python-version: ["3.13", "3.14", "3.15", "3.16", "3.14t", "3.15t", "3.16t"]
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv run pytest
+      # A dependency's compiled module could turn the GIL back on, and the tests would still pass.
+      - name: Check the GIL stays off
+        if: endsWith(matrix.python-version, 't')
+        run: uv run python -W error::RuntimeWarning -c "import sys, padeploy.cli; assert not sys._is_gil_enabled()"
 
   # Release PRs must bump the version past the latest one on PyPI and have a CHANGELOG.md entry for it.
   version-bump:
