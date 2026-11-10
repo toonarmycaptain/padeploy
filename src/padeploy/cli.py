@@ -1,12 +1,16 @@
 """Command-line interface: a thin layer over config, api, selection, deploy and traffic."""
 
 import logging
+import math
+import os
+import shutil
 import sys
+import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import click
 
@@ -51,10 +55,13 @@ logger = logging.getLogger(__name__)
 
 
 class _EchoHandler(logging.Handler):
-    """Print log messages to stderr with click."""
+    """Print log messages to stderr with click, under the live tree if there is one."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        click.echo(self.format(record), err=True)
+        if tree := _live_tree:
+            tree.echo_below(self.format(record), err=True)
+        else:
+            click.echo(self.format(record), err=True)
 
 
 class _Group(click.Group):
@@ -395,22 +402,147 @@ def _echo_results(
     run: Callable[[list[str]], Iterable[tuple[str, str | None]]],
     notes: Mapping[str, str] | None = None,
 ) -> Iterator[tuple[str, str | None]]:
-    """Call ``run`` with ``files`` in tree order, and yield its (path, error or None) results.
+    """Call ``run`` with ``files`` in tree order, and yield its (path, error or None) results as
+    they come, printing the tree with any of the ``notes`` and each file's result.
 
-    As each comes, it prints the tree down to that file, with any of the ``notes`` on it, and the
-    result after its name: OK, or FAIL and the error.
+    In a terminal the tree fits in, the tree prints first with each file pending, and each is
+    marked OK or FAIL in place as its result comes; the errors follow the tree. Otherwise the tree
+    prints down to each file once it and the files above it have results, with OK, or FAIL and
+    the error, after the file's name.
     """
     lines = file_tree(files)
-    unprinted = iter(lines)
-    for path, error in run([line.path for line in lines if line.path is not None]):
-        for line in unprinted:  # directories before this file, then the file
-            indent = "  " * (line.depth + 1)
-            if line.path == path:
-                result = f"FAIL: {error}" if error else "OK"
-                click.echo(f"{indent}{_label(line, notes)}  {result}")
-                break
-            click.echo(f"{indent}{line.label}")
-        yield path, error
+    size = _terminal_size()
+    tree = (
+        _LiveTree(lines, notes, size)
+        if size and _LiveTree.fits(lines, size)
+        else _InOrderTree(lines, notes)
+    )
+    with tree:
+        for path, error in run([line.path for line in lines if line.path is not None]):
+            tree.show(path, error)
+            yield path, error
+
+
+class _InOrderTree:
+    """Prints the tree down to each file once it and the files above it have results."""
+
+    def __init__(self, lines: list[TreeLine], notes: Mapping[str, str] | None) -> None:
+        self.lines = lines
+        self.notes = notes
+        self.results: dict[str, str | None] = {}
+        self.printed = 0  # lines
+
+    def __enter__(self) -> Self:
+        """Nothing to print before the first result."""
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        """Nothing to print after the last result: errors print on their files' lines."""
+
+    def show(self, path: str, error: str | None) -> None:
+        """Record ``path``'s result, then print down to the last file that has one, as do all the
+        files above it."""
+        self.results[path] = error
+        end = self.printed
+        for i in range(self.printed, len(self.lines)):
+            if (file := self.lines[i].path) is not None:
+                if file not in self.results:
+                    break
+                end = i + 1
+        for line in self.lines[self.printed : end]:
+            text = f"{'  ' * (line.depth + 1)}{_label(line, self.notes)}"
+            if line.path is not None:
+                error = self.results[line.path]
+                text += f"  FAIL: {error}" if error else "  OK"
+            click.echo(text)
+        self.printed = end
+
+
+PENDING = "pending"
+
+
+class _LiveTree:
+    """Prints the tree with each file pending, then marks each OK or FAIL in place, by moving the
+    cursor with ANSI codes. The errors follow the tree.
+
+    The cursor can only reach rows still on screen, and its moves count rows, not lines. So each
+    line is cut to fit one row, and output under the tree goes through ``echo_below``, which
+    counts its rows.
+    """
+
+    def __init__(
+        self, lines: list[TreeLine], notes: Mapping[str, str] | None, size: os.terminal_size
+    ) -> None:
+        self.lines = lines
+        self.notes = notes
+        self.size = size
+        self.row = {line.path: i for i, line in enumerate(lines) if line.path is not None}
+        self.errors: dict[str, str] = {}
+        self.below = 0  # rows printed under the tree
+        self.lock = threading.Lock()  # results and log messages from other threads
+
+    @staticmethod
+    def fits(lines: list[TreeLine], size: os.terminal_size) -> bool:
+        """Whether ``lines`` fit on screen with a row for the cursor, each with room for its
+        indent, two characters of its name and the widest result."""
+        indent = 2 * (max((line.depth for line in lines), default=0) + 1)
+        return len(lines) < size.lines and indent + 2 + len(f"  {PENDING}") < size.columns
+
+    def __enter__(self) -> Self:
+        """Print the tree with each file pending, and send log messages under it."""
+        global _live_tree
+        for line in self.lines:
+            click.echo(self._text(line, PENDING))
+        _live_tree = self
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        """Stop sending log messages under the tree, then print the errors in tree order."""
+        global _live_tree
+        with self.lock:
+            _live_tree = None
+        for line in self.lines:
+            if line.path in self.errors:
+                click.echo(f"  {line.path}  FAIL: {self.errors[line.path]}")
+
+    def show(self, path: str, error: str | None) -> None:
+        """Mark ``path`` OK or FAIL in place, or under the tree once its row has scrolled off."""
+        result = "FAIL" if error else "OK"
+        with self.lock:
+            if error:
+                self.errors[path] = error
+            up = len(self.lines) - self.row[path] + self.below
+            if up < self.size.lines:
+                text = self._text(self.lines[self.row[path]], result)
+                # One write: Ctrl-C between separate writes would strand the cursor in the tree.
+                click.echo(f"\x1b[{up}A\r{text}\x1b[K\x1b[{up}B\r", nl=False, color=True)
+            else:
+                self._echo_below(f"  {path}  {result}")
+
+    def echo_below(self, message: str, err: bool = False) -> None:
+        """Print ``message`` under the tree."""
+        with self.lock:
+            self._echo_below(message, err)
+
+    def _echo_below(self, message: str, err: bool = False) -> None:
+        """Print ``message`` under the tree and count its rows; the caller holds the lock."""
+        click.echo(message, err=err)
+        columns = self.size.columns
+        self.below += sum(max(1, math.ceil(len(part) / columns)) for part in message.split("\n"))
+
+    def _text(self, line: TreeLine, result: str) -> str:
+        """``line``, with ``result`` after a file's name, cut to fit one row."""
+        indent = "  " * (line.depth + 1)
+        label = _label(line, self.notes)
+        room = self.size.columns - 1 - len(indent)
+        if line.path is not None:
+            room -= len(f"  {PENDING}")
+        if len(label) > room:
+            label = label[: room - 1] + "…"
+        return f"{indent}{label}  {result}" if line.path is not None else f"{indent}{label}"
+
+
+_live_tree: _LiveTree | None = None  # the tree being marked in place, if any
 
 
 def _upload(
@@ -424,7 +556,7 @@ def _upload(
             if not error:
                 uploaded.append(path)
     finally:  # if an upload raises, e.g. a rejected token, earlier ones are on the server anyway
-        if uv_files := [path for path in uploaded if path in UV_FILES]:
+        if uv_files := [path for path in UV_FILES if path in uploaded]:
             click.echo(
                 f"Warning: uploaded {' and '.join(uv_files)}. If dependencies changed, run"
                 " `uv sync` on PythonAnywhere, then `padeploy reload`.",
@@ -660,3 +792,14 @@ def _interactive() -> bool:
     A function of its own so tests can patch it: CliRunner's stdin is never a terminal.
     """
     return sys.stdin.isatty()
+
+
+def _terminal_size() -> os.terminal_size | None:
+    """The terminal's size if stdout and stderr are both one (log messages print under a live
+    tree too), else None.
+
+    A function of its own so tests can patch it: CliRunner's output is never a terminal.
+    """
+    if sys.stdout.isatty() and sys.stderr.isatty():
+        return shutil.get_terminal_size()
+    return None

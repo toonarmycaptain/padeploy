@@ -1,8 +1,10 @@
 """Thin client for the PythonAnywhere API: auth, timeouts and rate-limit retries."""
 
 import logging
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import date
 from typing import Any
 from urllib.parse import quote
@@ -59,6 +61,8 @@ class PAClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.sleep = sleep
+        self._lock = threading.Lock()
+        self._waiting = 0  # threads in a rate-limit wait
 
     def reload(self, domain: str) -> str | None:
         """Reload the web app. Returns a warning if it reloaded but has no CNAME record."""
@@ -141,15 +145,31 @@ class PAClient:
             elif attempt < self.max_retries:
                 try:
                     delay = float(response.headers["Retry-After"])
-                    logger.warning(f"Rate limited by PythonAnywhere; retrying in {delay:g}s")
+                    warning = f"Rate limited by PythonAnywhere; retrying in {delay:g}s"
                 except (KeyError, ValueError):  # missing, or the HTTP-date form
                     delay = 2**attempt
-                logger.debug(
-                    f"429 on {method} {url}; "
-                    f"retry {attempt + 1:d} of {self.max_retries:d} in {delay:g}s"
-                )
-                self.sleep(delay)
+                    warning = None
+                with self._rate_limited(warning):
+                    logger.debug(
+                        f"429 on {method} {url}; "
+                        f"retry {attempt + 1:d} of {self.max_retries:d} in {delay:g}s"
+                    )
+                    self.sleep(delay)
         raise PAError(f"Still rate limited after {self.max_retries} retries: {method} {url}")
+
+    @contextmanager
+    def _rate_limited(self, warning: str | None) -> Iterator[None]:
+        """Count the calling thread as in a rate-limit wait. Only the first of the threads waiting
+        together logs its ``warning``."""
+        with self._lock:
+            if warning and not self._waiting:
+                logger.warning(warning)
+            self._waiting += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._waiting -= 1
 
 
 def _detail(response: requests.Response) -> str:

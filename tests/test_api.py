@@ -401,6 +401,18 @@ def test_rate_limit_log_messages(
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == expected_logs
 
 
+def test_only_the_first_of_overlapping_rate_limit_waits_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="padeploy")
+    client, _, _ = make_client()
+    with client._rate_limited("first"), client._rate_limited("second, during the first"):
+        pass
+    with client._rate_limited("third, after them"):
+        pass
+    assert [r.getMessage() for r in caplog.records] == ["first", "third, after them"]
+
+
 @pytest.mark.parametrize("max_retries", [-1, -5])
 def test_rejects_negative_max_retries(max_retries: int) -> None:
     with pytest.raises(ValueError, match="max_retries must be >= 0"):
